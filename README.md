@@ -1,7 +1,7 @@
-# StormKit
+# StormKit Engine
+[![License](https://img.shields.io/badge/License-GNU%20GPLv3-blue.svg)](https://opensource.org/license/gpl-3-0)
 
-StormKit is my personal C++ game engine.
-[![License](https://img.shields.io/badge/License-GNU GPLv3-blue.svg)](https://opensource.org/license/gpl-3-0)
+StormKit Engine is my personal C++ game engine.
 
 | OS      | Status                                                                                                                                                                                                                     |
 | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
