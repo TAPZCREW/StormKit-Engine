@@ -1,0 +1,187 @@
+---
+name: Linux
+
+on:
+  pull_request:
+    branches: [develop]
+    paths-ignore:
+      - .github/workflows/Windows.yml
+      - .github/workflows/macOS.yml
+      - .github/workflows/iOS.yml
+      - .github/workflows/Android.yml
+      - .github/workflows/AutoMerger.yml
+      - .gitignore
+      - LICENSE
+      - README.md
+
+  push:
+    branches: [main, develop]
+    paths-ignore:
+      - .github/workflows/Windows.yml
+      - .github/workflows/macOS.yml
+      - .github/workflows/iOS.yml
+      - .github/workflows/Android.yml
+      - .github/workflows/AutoMerger.yml
+      - .gitignore
+      - LICENSE
+      - README.md
+
+env:
+  LLVM_VERSION: "-22"
+
+jobs:
+  build:
+    name: ${{ matrix.compiler }} ${{ matrix.arch }}  (${{ matrix.kind }}/${{ matrix.mode }})
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04]
+        compiler: [LLVM-libc++]
+        arch: [x64]
+        kind: [static, shared]
+        mode: [release, debug]
+
+    runs-on: ${{ matrix.os }}
+    if: ${{ !contains(github.event.head_commit.message, 'ci skip') }}
+
+    concurrency:
+      group: ${{ github.ref }}-${{ github.base_ref }}-${{ github.head_ref }}-${{ matrix.os }}-${{ matrix.compiler }}-${{ matrix.arch }}-${{ matrix.kind
+        }}-${{ matrix.mode }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.ref }}
+
+      - name: Add LLVM apt repository
+        uses: myci-actions/add-deb-repo@11
+        with:
+          repo: deb http://apt.llvm.org/noble/ llvm-toolchain-noble main
+          repo-name: llvm
+          keys-asc: https://apt.llvm.org/llvm-snapshot.gpg.key
+
+      - name: Update apt repositories
+        run: sudo apt update
+
+      - name: Install system dependencies
+        uses: awalsh128/cache-apt-pkgs-action@latest
+        with:
+          packages: |
+              build-essential
+              cmake
+              apt-file
+              ninja-build
+              meson
+              pkg-config
+              libelf-dev
+              libdwarf-dev
+              mold
+              nasm
+              llvm${{ env.LLVM_VERSION }}
+              llvm${{ env.LLVM_VERSION }}-dev
+              llvm${{ env.LLVM_VERSION }}-runtime
+              clang${{ env.LLVM_VERSION }}
+              clang-tools${{ env.LLVM_VERSION }}
+              libclang-common${{ env.LLVM_VERSION }}-dev
+              libclang${{ env.LLVM_VERSION }}-dev
+              libclang1${{ env.LLVM_VERSION }}
+              python3-clang${{ env.LLVM_VERSION }}
+              libclang-rt${{ env.LLVM_VERSION }}-dev
+              libpolly${{ env.LLVM_VERSION }}-dev
+              lld${{ env.LLVM_VERSION }}
+              libc++${{ env.LLVM_VERSION }}-dev
+              libc++abi${{ env.LLVM_VERSION }}-dev
+              libomp${{ env.LLVM_VERSION }}-dev
+              libclc${{ env.LLVM_VERSION }}-dev
+              libunwind${{ env.LLVM_VERSION }}-dev
+              ninja-build
+          version: 1.0
+
+      - name: Force Install libc++
+        run: sudo apt install libc++${{ env.LLVM_VERSION }}-dev
+
+      - name: Set XMake env
+        run: |
+          echo "XMAKE_ROOTDIR=${{ github.workspace }}/.xmake-cache" >> $GITHUB_ENV
+          echo "XMAKE_PKG_INSTALLDIR=${{ github.workspace }}/.xmake-packages" >> $GITHUB_ENV
+          echo "${{ github.workspace }}/.xmake-cache" >> $GITHUB_PATH
+
+      - name: Generate XMake cachekey
+        id: xmake_cachekey
+        run: echo "key=$(date +'%W')" >> $GITHUB_OUTPUT
+        shell: bash
+
+      - name: Restore cached XMake
+        id: restore-xmakecache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.XMAKE_ROOTDIR }}
+          key: ${{ matrix.os }}-${{ matrix.arch }}-W${{ steps.xmake_cachekey.outputs.key }}
+
+      - name: Setup XMake
+        uses: xmake-io/github-action-setup-xmake@v1
+        with:
+          xmake-version: branch@dev
+          actions-cache-folder: .xmake-cache
+
+      - name: Cache XMake
+        if: ${{ !steps.restore-xmakecache.outputs.cache-hit }}
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.XMAKE_ROOTDIR }}
+          key: ${{ steps.restore-xmakecache.outputs.cache-primary-key }}
+
+      - name: Update XMake repository
+        run: xmake repo --update
+
+      - name: Generate packages cachekey
+        id: packages_cachekey
+        run: echo "hash=$(xmake l utils.ci.packageskey)" >> $GITHUB_OUTPUT
+        shell: bash
+
+      - name: Restore cached packages
+        id: restore-packagescache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.XMAKE_PKG_INSTALLDIR }}
+          key: ${{ matrix.os }}-${{ matrix.compiler }}-${{ matrix.arch }}-${{ matrix.mode }}-${{ steps.packages_cachekey.outputs.hash }}
+
+      - name: Configure & Install dependencies
+        id: configure
+        run: |
+          xmake f -vD -a ${{ (matrix.arch  == 'x64') && 'x86_64' || (matrix.arch == 'arm64') && 'aarch64' || matrix.arch }} \
+           --yes \
+           -m ${{ (matrix.mode == 'release' || matrix.mode == 'debug') && matrix.mode || 'releasedbg' }} \
+           -k ${{ matrix.kind }} \
+           --mold=y \
+           --on_ci=y \
+           ${{ (matrix.compiler == 'LLVM-libc++') && '--toolchain=llvm --sdk="/usr/lib/llvm$LLVM_VERSION/" --runtimes="c++_shared"' || '' }} \
+           --lto=${{ (matrix.mode == 'release') && 'y' || 'n' }}
+
+      - name: Cache packages
+        if: ${{ !steps.restore-packagescache.outputs.cache-hit }}
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.XMAKE_PKG_INSTALLDIR }}
+          key: ${{ steps.restore-packagescache.outputs.cache-primary-key }}
+
+      - name: Build
+        id: build
+        run: |
+          xmake b -v
+
+      - name: Run unit tests
+        run: xmake test -v
+
+      - name: Installation
+        run: xmake install -v --installdir="${{ github.workspace }}/output"
+
+      - name: Upload artifacts
+        id: upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.os }}-${{ matrix.compiler }}-${{ matrix.arch }}-${{ matrix.kind }}-${{ matrix.mode }}
+          path: ${{ github.workspace }}/output
