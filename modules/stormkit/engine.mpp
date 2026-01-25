@@ -2,9 +2,9 @@
 // This file is subject to the license terms in the LICENSE file
 // found in the top-level of this distribution
 
-export module stormkit.Engine;
+export module stormkit.engine;
 
-export import :Core;
-export import :Renderer;
-export import :ECS;
-export import :SpriteRenderer;
+export import :core;
+export import :renderer;
+export import :ecs;
+export import :sprite_renderer;

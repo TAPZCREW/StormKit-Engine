@@ -2,178 +2,171 @@ module;
 
 #include <cstddef>
 
-module stormkit.Engine;
+module stormkit.engine;
 
 import std;
 
-import stormkit.core;
-import stormkit.gpu;
+import stormkit;
 
-import :SpriteRenderer;
+import :sprite_renderer;
+
+namespace cm = stormkit::monadic;
 
 namespace stormkit::engine {
     namespace {
-        constexpr auto Quad_Sprite_Shader = as_bytes(0x11, 0x22
-                                                     // #include <QuadSprite.spv.h>
+        constexpr auto QUAD_SPRITE_SHADER = core::into_bytes({ 0x11, 0x22 } // #include <QuadSprite.spv.h>
         );
 
-        constexpr auto Sprite_Vertex_Size                 = sizeof(SpriteVertex);
-        constexpr auto Sprite_Vertex_Binding_Descriptions = std::array {
-            gpu::VertexBindingDescription { .binding = 0, .stride = Sprite_Vertex_Size }
+        constexpr auto SPRITE_VERTEX_SIZE                 = sizeof(SpriteVertex);
+        constexpr auto SPRITE_VERTEX_BINDING_DESCRIPTIONS = std::array {
+            gpu::VertexBindingDescription {
+                                           .binding = 0,
+                                           .stride  = SPRITE_VERTEX_SIZE,
+                                           },
         };
-        constexpr auto Sprite_Vertex_Attribute_Descriptions = std::array {
+        constexpr auto SPRITE_VERTEX_ATTRIBUTE_DESCRIPTIONS = std::array {
             gpu::VertexInputAttributeDescription {
                                                   .location = 0,
                                                   .binding  = 0,
-                                                  .format   = gpu::format::f322,
-                                                  .offset   = offsetof(SpriteVertex, position) },
+                                                  .format   = gpu::PixelFormat::RG32F,
+                                                  .offset   = offsetof(SpriteVertex, position),
+                                                  },
             gpu::VertexInputAttributeDescription {
                                                   .location = 1,
                                                   .binding  = 0,
-                                                  .format   = gpu::format::f322,
-                                                  .offset   = offsetof(SpriteVertex, uv)       }
+                                                  .format   = gpu::PixelFormat::RG32F,
+                                                  .offset   = offsetof(SpriteVertex,                     uv),
+                                                  },
         };
 
-        constexpr auto Sprite_Vertex_Buffer_Size = Sprite_Vertex_Size * 4;
+        constexpr auto SPRITE_VERTEX_BUFFER_SIZE = SPRITE_VERTEX_SIZE * 4;
     } // namespace
 
     //////////////////////////////////////
     //////////////////////////////////////
-    SpriteRenderer::SpriteRenderer(const Renderer& renderer, const math::ExtentF& viewport, Tag)
-        : m_renderer { as_ref(renderer) }, m_viewport { viewport } {
-        m_render_data = allocate<RenderData>();
-        gpu::Shader::load_from_bytes(renderer.device(),
-                                     Quad_Sprite_Shader,
-                                     gpu::ShaderStageFlag::Vertex)
-          .transform(monadic::set(m_render_data->vertex_shader))
-          .transform_error(monadic::throw_as_exception());
+    auto SpriteRenderer::do_init() noexcept -> gpu::Expected<void> {
+        m_render_data = core::allocate_unsafe<RenderData>();
+        auto device   = as_ref(m_renderer->device());
 
-        gpu::Shader::load_from_bytes(renderer.device(),
-                                     Quad_Sprite_Shader,
-                                     gpu::ShaderStageFlag::Fragment)
-          .transform(monadic::set(m_render_data->fragment_shader))
-          .transform_error(monadic::throw_as_exception());
-
-        gpu::PipelineLayout::create(std::cref(renderer.device()), gpu::RasterPipelineLayout {})
-          .transform(monadic::set(m_render_data->pipeline_layout))
-          .transform_error(monadic::throw_as_exception());
-
-        m_render_data->pipeline_state = gpu::RasterPipelineState {
-            .input_assembly_state = { .topology = gpu::PrimitiveTopology::Triangle_Strip },
-            .viewport_state       = { .viewports = { { .extent = m_viewport, .depth = { 0, 1 } } },
-                                     .scissors  = { { .extent = m_viewport } } },
-            .color_blend_state    = { .attachments = { {} } },
-            .shader_state = { .shaders = as_refs<std::vector>(m_render_data->vertex_shader,
-                                     m_render_data->fragment_shader) },
-            .vertex_input_state
-            = { .binding_descriptions = to_dyn_array(Sprite_Vertex_Binding_Descriptions),
-                                     .input_attribute_descriptions
-                = to_dyn_array(Sprite_Vertex_Attribute_Descriptions) },
-        };
+        return gpu::Shader::load_from_bytes(m_renderer->device(), QUAD_SPRITE_SHADER, gpu::ShaderStageFlag::VERTEX)
+          .transform(cm::set(m_render_data->vertex_shader))
+          .and_then(bind_front(gpu::Shader::load_from_bytes, device, QUAD_SPRITE_SHADER, gpu::ShaderStageFlag::FRAGMENT))
+          .transform(cm::set(m_render_data->fragment_shader))
+          .and_then(bind_front(gpu::PipelineLayout::create, device, gpu::RasterPipelineLayout {}))
+          .transform(cm::set(m_render_data->pipeline_layout))
+          .transform([this] noexcept {
+              m_render_data->pipeline_state = gpu::RasterPipelineState {
+                   .input_assembly_state = {
+                       .topology = gpu::PrimitiveTopology::TRIANGLE_STRIP,
+                   },
+                   .viewport_state = {
+                       .viewports = {
+                           gpu::Viewport {
+                               .extent = m_viewport,
+                               .depth  = { 0.f, 1.f },
+                           },
+                       },
+                       .scissors  = {
+                           gpu::Scissor {
+                               .extent = m_viewport.to<u32>()
+                           },
+                       },
+                   },
+                   .color_blend_state = { .attachments = { {} } },
+                   .shader_state      = to_refs(m_render_data->vertex_shader, m_render_data->fragment_shader),
+                   .vertex_input_state = {
+                       .binding_descriptions = to_dyn_array(SPRITE_VERTEX_BINDING_DESCRIPTIONS),
+                       .input_attribute_descriptions = to_dyn_array(SPRITE_VERTEX_ATTRIBUTE_DESCRIPTIONS),
+                   },
+                };
+          });
     }
 
     //////////////////////////////////////
     //////////////////////////////////////
-    auto SpriteRenderer::updateFrameGraph(FrameGraphBuilder& graph) noexcept -> void {
-        namespace views  = std::views;
-        namespace ranges = std::ranges;
-
+    auto SpriteRenderer::update_framegraph(FrameGraphBuilder& graph) noexcept -> void {
         struct GeometryTransferTask {
             Ref<GraphBuffer> staging_buffer;
-            Ref<GraphBuffer> vertex_buffers;
+            Ref<GraphBuffer> vertex_buffer;
         };
 
-        if (not m_vertex_buffer) {
-            m_vertex_buffer = gpu::Buffer::
-                                create(m_renderer->device(),
-                                       { .usages = gpu::BufferUsageFlag::Vertex
-                                                   | gpu::BufferUsageFlag::Transfer_Dst,
-                                         .size     = Sprite_Vertex_Buffer_Size,
-                                         .property = gpu::MemoryPropertyFlag::Device_Local })
-                                  .transform_error(monadic::assert())
-                                  .value();
-        }
-
-        auto& vertex_buffer = graph.setRetainedResource("StormKit:VertexBuffer",
-                                                        BufferDescription {
-                                                          .size = Sprite_Vertex_Buffer_Size },
-                                                        *m_vertex_buffer);
+        auto& vertex_buffer = graph.set_retained_resource("StormKit:VertexBuffer",
+                                                          BufferDescription {
+                                                            .size = SPRITE_VERTEX_BUFFER_SIZE,
+                                                          },
+                                                          *m_vertex_buffer);
 
         auto transfer_task_data = OptionalRef<const GeometryTransferTask> {};
         if (not m_vertex_buffer) {
-            m_vertex_buffer = gpu::Buffer::
-                                create(m_renderer->device(),
-                                       { .usages = gpu::BufferUsageFlag::Vertex
-                                                   | gpu::BufferUsageFlag::Transfer_Dst,
-                                         .size     = Sprite_Vertex_Buffer_Size,
-                                         .property = gpu::MemoryPropertyFlag::Device_Local })
-                                  .transform_error(monadic::assert())
-                                  .value();
+            m_vertex_buffer = gpu::Buffer::create(m_renderer->device(),
+                                                  {
+                                                    .usages   = gpu::BufferUsageFlag::VERTEX | gpu::BufferUsageFlag::TRANSFER_DST,
+                                                    .size     = SPRITE_VERTEX_BUFFER_SIZE,
+                                                    .property = gpu::MemoryPropertyFlag::DEVICE_LOCAL,
+                                                  })
+                                .transform_error(cm::assert())
+                                .value();
 
-            const auto& task = graph.addTransferTask<GeometryTransferTask>(
+            const auto& task = graph.add_transfer_task<GeometryTransferTask>(
               "StormKit:SpriteGeometryTranferTask",
-              [this](GeometryTransferTask& task_data, GraphTaskBuilder& builder) noexcept {
-                  task_data
-                    .staging_buffer = as_ref_mut(builder
-                                                   .create("StagingBuffer",
-                                                           BufferDescription {
-                                                             .size = Sprite_Vertex_Buffer_Size }));
-                  task_data.vertex_buffer = builder.write(*m_vertex_buffer);
+              [&, this](GeometryTransferTask& task_data, GraphTaskBuilder& builder) noexcept {
+                  task_data.staging_buffer = as_ref_mut(builder.create("StagingBuffer",
+                                                                       BufferDescription {
+                                                                         .size = SPRITE_VERTEX_BUFFER_SIZE,
+                                                                       }));
+                  task_data.vertex_buffer  = as_ref_mut(builder.write(vertex_buffer));
               },
               [](const GeometryTransferTask&  task_data,
                  OptionalRef<gpu::RenderPass> _,
                  gpu::CommandBuffer&          cmb,
                  const BakedFrameGraph::Data& graph_data) static noexcept {
-                  auto staging_buffer = graph_data.getActualResource(*task_data.staging_buffer);
-                  auto vertex_buffer  = graph_data.getActualResource(*task_data.vertex_buffer);
+                  const auto& staging_buffer = graph_data.get_actual_resource(*task_data.staging_buffer);
+                  auto&       vertex_buffer  = graph_data.get_actual_resource(*task_data.vertex_buffer);
 
-                  cmb.copy_buffer(staging_buffer, vertex_buffer, Sprite_Vertex_Buffer_Size);
+                  cmb.copy_buffer(staging_buffer, vertex_buffer, SPRITE_VERTEX_BUFFER_SIZE);
               });
-            transfer_task_data = as_ref(graph.getTaskData<GeometryTransferTask>(task.dataID()));
+            transfer_task_data = as_opt_ref(graph.get_task_data<GeometryTransferTask>(task.data_id()));
             m_dirty            = false;
         }
 
         struct DrawTask {
-            Ref<GraphBuffer> vertex_buffers;
+            Ref<GraphBuffer> vertex_buffer;
             Ref<GraphImage>  backbuffer;
         };
 
-        graph.addRasterTask<DrawTask>(
+        auto&& _ = graph.add_raster_task<DrawTask>(
           "StormKit:SpriteRenderTask",
           [&](DrawTask& task_data, GraphTaskBuilder& builder) noexcept {
-              task_data
-                .backbuffer = as_ref(builder.create("color",
-                                                    engine::ImageDescription {
-                                                      .extent = m_viewport,
-                                                      .type   = gpu::ImageType::T2D,
-                                                      .format = gpu::PixelFormat::BGRA8_UNORM }));
+              task_data.backbuffer = as_ref_mut(builder.create("color",
+                                                               engine::ImageDescription {
+                                                                 .extent = m_viewport.to<u32>(),
+                                                                 .type   = gpu::ImageType::T2D,
+                                                                 .format = gpu::PixelFormat::BGRA8_UNORM,
+                                                               }));
 
-              if (transfer_task_data)
-                  task_data.vertex_buffers = builder.read((*transfer_task_data)->vertex_buffers);
+              if (transfer_task_data) task_data.vertex_buffer = as_ref_mut(builder.read(*transfer_task_data->vertex_buffer));
               else
-                  task_data.vertex_buffer = builder.read(vertex_buffer);
+                  task_data.vertex_buffer = as_ref_mut(builder.read(vertex_buffer));
 
-              graph.setFinalResource(task_data.backbuffer->id());
+              graph.set_final_resource(task_data.backbuffer->id());
           },
-          [this](const DrawTask&              task_data,
+          [this](const DrawTask&              task,
                  OptionalRef<gpu::RenderPass> render_pass,
                  gpu::CommandBuffer&          cmb,
-                 const BakedFrameGraph::Data&) noexcept {
+                 const BakedFrameGraph::Data& task_data) noexcept {
               if (not m_render_data->pipeline) {
-                  m_render_data
-                    ->pipeline = gpu::Pipeline::create(m_renderer->device(),
-                                                       m_render_data->pipeline_state,
-                                                       m_render_data->pipeline_layout,
-                                                       *render_pass)
-                                   .transform_error(assert("Failed to create pipeline"))
-                                   .value();
+                  m_render_data->pipeline = gpu::Pipeline::create(m_renderer->device(),
+                                                                  m_render_data->pipeline_state,
+                                                                  m_render_data->pipeline_layout,
+                                                                  *render_pass)
+                                              .transform_error(cm::assert("Failed to create pipeline"))
+                                              .value();
               }
-              auto buffers = as_refs<std::array>(task_data.vertex_buffer);
+              auto buffers = as_refs(m_vertex_buffer);
 
               cmb.bind_pipeline(m_render_data->pipeline);
-              cmb.bind_vertex_buffers(buffers);
-              for (auto&& [_, sprite_data] : m_sprites)
-                  cmb.draw(std::size(sprite_data.sprite.vertices));
+              cmb.bind_vertex_buffers(buffers, {});
+              for (auto&& [_, sprite_data] : m_sprites) cmb.draw(std::size(sprite_data.sprite.vertices));
           },
           true);
     }

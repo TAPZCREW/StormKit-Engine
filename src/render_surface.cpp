@@ -1,113 +1,104 @@
-module stormkit.Engine;
+module;
+
+#include <stormkit/core/contract_macro.hpp>
+
+module stormkit.engine;
 
 import std;
 
-import stormkit.core;
-import stormkit.log;
-import stormkit.wsi;
-import stormkit.gpu;
+import stormkit;
 
-import :Renderer;
+import :renderer;
 
 using namespace std::chrono_literals;
+
+namespace stdr = std::ranges;
 
 namespace stormkit::engine {
     /////////////////////////////////////
     /////////////////////////////////////
-    RenderSurface::RenderSurface(const gpu::Instance& instance,
-                                 const gpu::Device&   device,
-                                 const gpu::Queue&    raster_queue,
-                                 const wsi::Window&   window,
-                                 Tag) {
-        gpu::Surface::create_from_window(instance, window)
-            .transform(monadic::set(m_surface))
-            .and_then(bind_front(gpu::Swapchain::create,
-                                std::cref(device),
-                                std::cref(*m_surface),
-                                std::cref(window.extent()),
-                                std::nullopt))
-            .transform(monadic::set(m_swapchain))
-            .transform_error(monadic::throw_as_exception());
+    auto RenderSurface::do_init(const Renderer& renderer, const wsi::Window& window) noexcept -> gpu::Expected<void> {
+        const auto& instance     = renderer.instance();
+        const auto& device       = renderer.device();
+        const auto& raster_queue = renderer.raster_queue();
+        const auto& command_pool = renderer.main_command_pool();
 
-        for (auto _ : range(std::size(m_swapchain->images()))) {
-            gpu::Semaphore::create(device)
-                .transform(monadic::emplace_to(m_image_availables))
-                .and_then(bind_front(gpu::Semaphore::create, std::cref(device)))
-                .transform(monadic::emplace_to(m_render_finisheds))
-                .and_then(bind_front(gpu::Fence::create_signaled, std::cref(device)))
-                .transform(monadic::emplace_to(m_in_flight_fences))
-                .transform_error(
-                    monadic::map(monadic::narrow<gpu::Result>(), monadic::throw_as_exception()));
-        }
+        using core::monadic::emplace_to;
 
-        const auto command_pool
-            = gpu::CommandPool::create(device)
-                  .transform_error(monadic::assert("Failed to raster Queue command pool"))
-                  .value();
+        return gpu::Surface::create_from_window(instance, window)
+          .transform(core::monadic::set(m_surface))
+          .and_then(bind_front(gpu::SwapChain::create, as_ref(device), as_ref(m_surface), as_ref(window.extent()), std::nullopt))
+          .transform(core::monadic::set(m_swapchain))
+          .and_then([&, this] noexcept -> gpu::Expected<void> {
+              for (auto _ : range(stdr::size(m_swapchain->images()))) {
+                  auto res = gpu::Semaphore::create(device)
+                               .transform(emplace_to(m_image_availables))
+                               .and_then(bind_front(gpu::Semaphore::create, as_ref(device)))
+                               .transform(emplace_to(m_render_finisheds))
+                               .and_then(bind_front(gpu::Fence::create_signaled, as_ref(device)))
+                               .transform(emplace_to(m_in_flight_fences));
+                  if (not res) return std::unexpected { res.error() };
+              }
 
-        auto transition_command_buffers
-            = command_pool.create_command_buffers(device, std::size(m_swapchain->images()));
+              return {};
+          })
+          .and_then(bind_front(&gpu::CommandPool::create_command_buffers,
+                               &command_pool,
+                               stdr::size(m_swapchain->images()),
+                               gpu::CommandBufferLevel::PRIMARY))
+          .and_then([&, this](auto&& transition_command_buffers) noexcept -> gpu::Expected<void> {
+              for (auto i : range(stdr::size(transition_command_buffers))) {
+                  auto&& image                     = m_swapchain->images()[i];
+                  auto&& transition_command_buffer = transition_command_buffers[i];
 
-        for (auto i : range(std::size(transition_command_buffers))) {
-            auto&& image                     = m_swapchain->images()[i];
-            auto&& transition_command_buffer = transition_command_buffers[i];
+                  transition_command_buffer.begin(true);
+                  transition_command_buffer
+                    .transition_image_layout(image, gpu::ImageLayout::UNDEFINED, gpu::ImageLayout::PRESENT_SRC);
+                  transition_command_buffer.end();
+              }
 
-            transition_command_buffer.begin(true);
-            transition_command_buffer.transition_image_layout(image,
-                                                            gpu::ImageLayout::UNDEFINED,
-                                                            gpu::ImageLayout::Present_Src);
-            transition_command_buffer.end();
-        }
+              auto res = gpu::Fence::create(device);
+              if (not res) return std::unexpected { res.error() };
+              auto& fence = *res;
+              auto  cmbs  = to_refs(transition_command_buffers);
+              raster_queue.submit({ .command_buffers = std::move(cmbs) }, as_opt_ref(fence));
 
-        auto fence = gpu::Fence::create(device)
-                         .transform_error(monadic::map(monadic::narrow<gpu::Result>(),
-                                                       monadic::throw_as_exception()))
-                         .value();
-
-        auto cmbs = to_refs(transition_command_buffers);
-        raster_queue.submit({ .command_buffers = cmbs }, fence);
-
-        fence.wait().transform_error(
-            monadic::map(monadic::narrow<gpu::Result>(), monadic::throw_as_exception()));
+              return fence.wait().transform(core::monadic::discard());
+          });
     }
 
     /////////////////////////////////////
     /////////////////////////////////////
-    auto RenderSurface::beginFrame(const gpu::Device& device) -> gpu::Expected<Frame> {
-        expects(m_surface.initialized());
-        expects(m_swapchain.initialized());
+    auto RenderSurface::begin_frame(const gpu::Device& device) -> gpu::Expected<Frame> {
+        EXPECTS(m_surface.initialized());
+        EXPECTS(m_swapchain.initialized());
 
         const auto& image_available = m_image_availables[m_current_frame];
         const auto& render_finished = m_render_finisheds[m_current_frame];
         auto&       in_flight       = m_in_flight_fences[m_current_frame];
 
         return in_flight.wait()
-            .transform([&in_flight](auto&& _) noexcept { in_flight.reset(); })
-            .and_then(bind_front(&gpu::Swapchain::acquire_next_image,
-                                &(m_swapchain.get()),
-                                100ms,
-                                std::cref(image_available)))
-            .transform([&, this](auto&& _result) noexcept {
-                auto&& [result, image_index] = _result; // TODO handle result
-                return Frame { .current_frame   = as<u32>(m_current_frame),
-                               .image_index     = image_index,
-                               .image_available = image_available,
-                               .render_finished = render_finished,
-                               .in_flight       = in_flight };
-            });
+          .transform([&in_flight](auto&& _) noexcept { in_flight.reset(); })
+          .and_then(bind_front(&gpu::SwapChain::acquire_next_image, &(m_swapchain.get()), 100ms, as_ref(image_available)))
+          .transform([&, this](auto&& _result) noexcept {
+              auto&& [result, image_index] = _result; // TODO handle result
+              return Frame { .current_frame   = as<u32>(m_current_frame),
+                             .image_index     = image_index,
+                             .image_available = as_ref(image_available),
+                             .render_finished = as_ref(render_finished),
+                             .in_flight       = as_ref(in_flight) };
+          });
     }
 
     /////////////////////////////////////
     /////////////////////////////////////
-    auto RenderSurface::presentFrame(const gpu::Queue& queue, const Frame& frame)
-        -> gpu::Expected<void> {
+    auto RenderSurface::present_frame(const gpu::Queue& queue, const Frame& frame) -> gpu::Expected<void> {
         const auto image_indices   = std::array { frame.image_index };
-        const auto wait_semaphores = as_refs<std::array>(*frame.render_finished);
-        const auto swapchains      = as_refs<std::array>(*m_swapchain);
+        const auto wait_semaphores = as_refs<std::array>(frame.render_finished);
+        const auto swapchains      = as_refs<std::array>(m_swapchain);
 
-        return queue.present(swapchains, wait_semaphores, image_indices)
-            .transform([this](auto&& _) noexcept {
-                if (++m_current_frame >= bufferingCount()) m_current_frame = 0;
-            });
+        return queue.present(swapchains, wait_semaphores, image_indices).transform([this](auto&& _) noexcept {
+            if (++m_current_frame >= buffering_count()) m_current_frame = 0;
+        });
     }
 } // namespace stormkit::engine

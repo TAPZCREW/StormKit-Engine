@@ -5,7 +5,7 @@
 import std;
 
 import stormkit.core;
-import stormkit.Main;
+import stormkit.main;
 import stormkit.log;
 import stormkit.wsi;
 
@@ -19,25 +19,25 @@ import SpritesApp;
 auto main(std::span<const std::string_view> args) -> int {
     using namespace stormkit;
 
-    wsi::parse_args(args);
+    // wsi::parse_args(args);
 
-    auto logger = log::Logger::create_logger_instance<log::ConsoleLogger>();
-    logger.ilog("Using StormKit {}.{}.{}\n    branch: {}\n    commit_hash: {}\n    built with {}",
-                STORMKIT_MAJOR_VERSION,
-                STORMKIT_MINOR_VERSION,
-                STORMKIT_PATCH_VERSION,
-                STORMKIT_GIT_BRANCH,
-                STORMKIT_GIT_COMMIT_HASH,
-                STORMKIT_COMPILER);
+    // auto logger = log::Logger::create_logger_instance<log::ConsoleLogger>();
+    // logger.ilog("Using StormKit {}.{}.{}\n    branch: {}\n    commit_hash: {}\n    built with {}",
+    //             STORMKIT_MAJOR_VERSION,
+    //             STORMKIT_MINOR_VERSION,
+    //             STORMKIT_PATCH_VERSION,
+    //             STORMKIT_GIT_BRANCH,
+    //             STORMKIT_GIT_COMMIT_HASH,
+    //             STORMKIT_COMPILER);
 
-    try {
-        auto app = SpritesApp {};
-        return app.run(args);
-    } catch (const std::exception& e) {
-        logger.flog("{}", e.what());
-        return -1;
-    } catch (...) {
-        logger.flog("Uncaught exception occured !");
-        return -1;
-    }
+    // try {
+    //     auto app = SpritesApp {};
+    //     return app.run(args);
+    // } catch (const std::exception& e) {
+    //     logger.flog("{}", e.what());
+    //     return -1;
+    // } catch (...) {
+    //     logger.flog("Uncaught exception occured !");
+    //     return -1;
+    // }
 }

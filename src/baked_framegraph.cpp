@@ -2,36 +2,32 @@
 // This file is subject to the license terms in the LICENSE file
 // found in the top-level of this distribution
 
-module stormkit.Engine;
+module stormkit.engine;
 
 import std;
 
-import stormkit.core;
-import stormkit.gpu;
+import stormkit;
 
-import :Renderer.FrameGraph;
-import :Renderer.RenderSurface;
+import :renderer.framegraph;
+import :renderer.render_surface;
 
 namespace stormkit::engine {
     /////////////////////////////////////
     /////////////////////////////////////
-    BakedFrameGraph::BakedFrameGraph(const gpu::Image&                 backbuffer,
-                                     Data&&                            data,
-                                     [[maybe_unused]] BakedFrameGraph* old)
+    BakedFrameGraph::BakedFrameGraph(const gpu::Image& backbuffer, Data&& data, [[maybe_unused]] BakedFrameGraph* old)
         : m_backbuffer { as_ref(backbuffer) }, m_data { std::move(data) } {
     }
 
     /////////////////////////////////////
     /////////////////////////////////////
-    auto BakedFrameGraph::execute(const gpu::Queue& queue) noexcept
-        -> gpu::Expected<Ref<const gpu::Semaphore>> {
+    auto BakedFrameGraph::execute(const gpu::Queue& queue) noexcept -> gpu::Expected<Ref<const gpu::Semaphore>> {
         return m_data.fence->wait().transform([&](auto&&) noexcept {
             m_data.fence->reset();
 
-            auto signal = as_refs<std::array>(std::as_const(m_data.semaphore));
+            auto signal = as_refs<std::array>(m_data.semaphore);
             m_data.cmb->submit(queue, {}, {}, signal, as_ref(m_data.fence));
 
-            return as_ref(std::as_const(*m_data.semaphore));
+            return as_ref(m_data.semaphore);
         });
     }
 } // namespace stormkit::engine

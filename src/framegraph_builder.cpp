@@ -2,14 +2,18 @@
 // This file is subject to the license terms in the LICENSE file
 // found in the top-level of this distribution
 
-module stormkit.Engine;
+module stormkit.engine;
 
 import std;
 
-import stormkit.core;
-import stormkit.gpu;
+import stormkit;
 
-import :Renderer.FrameGraph;
+import :renderer.framegraph;
+
+namespace stdr = std::ranges;
+namespace stdv = std::views;
+
+namespace sm = stormkit::monadic;
 
 namespace stormkit::engine {
     /////////////////////////////////////
@@ -17,51 +21,48 @@ namespace stormkit::engine {
     auto FrameGraphBuilder::bake() -> void {
         expects(not m_baked);
 
-        for (auto& task : m_tasks)
-            task.m_ref_count = std::size(task.creates()) + std::size(task.writes());
+        for (auto& task : m_tasks) task.m_ref_count = std::size(task.creates()) + std::size(task.writes());
 
         for (auto& resource : m_resources)
-            std::visit([](auto& resource) { resource.m_ref_count = std::size(resource.readers()); },
-                       resource);
+            std::visit([](auto& resource) { resource.m_ref_count = std::size(resource.readers()); }, resource);
 
-        cullUnreferencedResources();
-        buildPhysicalDescriptions();
+        cull_unreferenced_resources();
+        build_physical_descriptions();
 
         m_baked = true;
     }
 
     /////////////////////////////////////
     /////////////////////////////////////
-    auto FrameGraphBuilder::createFrameGraph(const gpu::Device&      device,
-                                             const gpu::CommandPool& command_pool,
-                                             BakedFrameGraph*        old) -> BakedFrameGraph {
-        auto&& [backbuffer, data] = allocatePhysicalResources(command_pool, device);
+    auto FrameGraphBuilder::create_framegraph(const gpu::Device&      device,
+                                              const gpu::CommandPool& command_pool,
+                                              BakedFrameGraph*        old) -> BakedFrameGraph {
+        auto&& [backbuffer, data] = allocate_physical_resources(command_pool, device);
 
         return BakedFrameGraph { backbuffer, std::move(data), old };
     }
 
     /////////////////////////////////////
     /////////////////////////////////////
-    auto FrameGraphBuilder::allocateFrameGraph(const gpu::Device&      device,
-                                               const gpu::CommandPool& command_pool,
-                                               BakedFrameGraph*        old)
-        -> std::unique_ptr<BakedFrameGraph> {
-        auto&& [backbuffer, data] = allocatePhysicalResources(command_pool, device);
+    auto FrameGraphBuilder::allocate_framegraph(const gpu::Device&      device,
+                                                const gpu::CommandPool& command_pool,
+                                                BakedFrameGraph*        old) -> Heap<BakedFrameGraph> {
+        auto&& [backbuffer, data] = allocate_physical_resources(command_pool, device);
 
-        return allocate<BakedFrameGraph>(backbuffer, std::move(data), old);
+        return allocate_unsafe<BakedFrameGraph>(backbuffer, std::move(data), old);
     }
 
     /////////////////////////////////////
     /////////////////////////////////////
-    auto FrameGraphBuilder::prepareTask(GraphTask& task) noexcept -> void {
+    auto FrameGraphBuilder::prepare_task(GraphTask& task) noexcept -> void {
         auto task_builder = GraphTaskBuilder { task, *this };
-        auto data         = m_datas[task.dataID()];
-        task.onSetup(*std::bit_cast<Byte*>(&data), task_builder);
+        auto data         = m_datas[task.data_id()];
+        task.on_setup(*std::bit_cast<Byte*>(&data), task_builder);
     }
 
     /////////////////////////////////////
     /////////////////////////////////////
-    auto FrameGraphBuilder::cullUnreferencedResources() noexcept -> void {
+    auto FrameGraphBuilder::cull_unreferenced_resources() noexcept -> void {
         auto unreferenced_resources = std::stack<Ref<GraphResourceVariant>> {};
 
         constexpr auto decrementRefcount = [](auto& value) noexcept {
@@ -69,44 +70,39 @@ namespace stormkit::engine {
         };
 
         constexpr auto isUnreferenced = [](const auto& resource) noexcept {
-            return resource.refCount() == 0 and resource.transient();
+            return resource.ref_count() == 0 and resource.transient();
         };
 
-        constexpr auto shouldCull = [](const auto& task) noexcept {
-            return task.refCount() == 0 and not task.cullImune();
-        };
+        constexpr auto shouldCull = [](const auto& task) noexcept { return task.ref_count() == 0 and not task.cull_imune(); };
 
-        const auto cull = [&decrementRefcount, &isUnreferenced, &unreferenced_resources, this](
-                              auto& task) noexcept {
+        const auto cull = [&decrementRefcount, &isUnreferenced, &unreferenced_resources, this](auto& task) noexcept {
             for (const auto id : task.reads()) {
-                auto& resource = getResource(id);
+                auto& resource = get_resource(id);
 
                 if (std::visit(
-                        [&decrementRefcount, &isUnreferenced](auto& value) {
-                            decrementRefcount(value);
-                            return isUnreferenced(value);
-                        },
-                        resource))
-                    unreferenced_resources.push(resource);
+                      [&decrementRefcount, &isUnreferenced](auto& value) {
+                          decrementRefcount(value);
+                          return isUnreferenced(value);
+                      },
+                      resource))
+                    unreferenced_resources.push(as_ref_mut(resource));
             }
         };
 
         for (auto& resource : m_resources)
-            if (std::visit(isUnreferenced, resource)) unreferenced_resources.push(resource);
+            if (std::visit(isUnreferenced, resource)) unreferenced_resources.push(as_ref_mut(resource));
 
         while (!std::empty(unreferenced_resources)) {
             auto resource = unreferenced_resources.top();
             unreferenced_resources.pop();
 
-            auto& creator
-                = getTask(std::visit([](auto& resource) noexcept { return resource.creator(); },
-                                     resource.get()));
+            auto& creator = get_task(std::visit([](auto& resource) noexcept { return resource.creator(); }, *resource));
             decrementRefcount(creator);
 
             if (shouldCull(creator)) cull(creator);
 
             for (const auto id : creator.writes()) {
-                auto& writer = getTask(id);
+                auto& writer = get_task(id);
 
                 decrementRefcount(writer);
                 if (shouldCull(writer)) cull(writer);
@@ -116,52 +112,45 @@ namespace stormkit::engine {
 
     /////////////////////////////////////
     /////////////////////////////////////
-    auto FrameGraphBuilder::buildPhysicalDescriptions() noexcept -> void {
-        auto layouts = HashMap<GraphID, gpu::ImageLayout> {};
-        m_preprocessed_framegraph
-            = m_tasks
-              | std::views::filter([](const auto& task) noexcept {
-                    return not(task.refCount() == 0 and not task.cullImune());
-                })
-              | std::views::transform(
-                  [&layouts, this](const auto& task) noexcept -> decltype(auto) {
-                      return Pass { .id         = task.id(),
-                                    .type       = task.type(),
-                                    .renderpass = buildRenderPassPhysicalDescription(task, layouts),
-                                    .name       = task.name(),
-                                    .buffers    = buildBufferPhysicalDescriptions(task),
-                                    .images     = buildImagePhysicalDescriptions(task) };
-                  })
-              | std::ranges::to<std::vector>();
+    auto FrameGraphBuilder::build_physical_descriptions() noexcept -> void {
+        auto layouts              = HashMap<GraphID, gpu::ImageLayout> {};
+        m_preprocessed_framegraph = m_tasks
+                                    | stdv::filter([](const auto& task) noexcept {
+                                          return not(task.ref_count() == 0 and not task.cull_imune());
+                                      })
+                                    | stdv::transform([&layouts, this](const auto& task) noexcept -> decltype(auto) {
+                                          return Pass { .id         = task.id(),
+                                                        .type       = task.type(),
+                                                        .renderpass = build_renderpass_physical_description(task, layouts),
+                                                        .name       = task.name(),
+                                                        .buffers    = build_buffer_physical_descriptions(task),
+                                                        .images     = build_image_physical_descriptions(task) };
+                                      })
+                                    | stdr::to<std::vector>();
     }
 
     /////////////////////////////////////
     /////////////////////////////////////
-    auto FrameGraphBuilder::buildImagePhysicalDescriptions(const GraphTask& task) noexcept
-        -> std::vector<ImageInfo> {
+    auto FrameGraphBuilder::build_image_physical_descriptions(const GraphTask& task) noexcept -> std::vector<ImageInfo> {
         return task.creates()
-               | std::views::filter([this](const auto& id) noexcept {
-                     const auto& resource = getResource(id);
+               | stdv::filter([this](const auto& id) noexcept {
+                     const auto& resource = get_resource(id);
 
-                     return is<GraphImage>(resource)
-                            and getResource<ImageDescription>(id).transient();
+                     return is<GraphImage>(resource) and get_resource<ImageDescription>(id).transient();
                  })
-               | std::views::transform([this](const auto& id) noexcept -> decltype(auto) {
-                     const auto& resource    = getResource<ImageDescription>(id);
+               | stdv::transform([this](const auto& id) noexcept -> decltype(auto) {
+                     const auto& resource    = get_resource<ImageDescription>(id);
                      const auto& description = resource.description();
 
                      const auto usages = [&description] noexcept {
                          if (gpu::is_depth_stencil_format(description.format))
-                             return gpu::ImageUsageFlag::Depth_Stencil_Attachment
-                                    | gpu::ImageUsageFlag::Transfert_Src;
+                             return gpu::ImageUsageFlag::DEPTH_STENCIL_ATTACHMENT | gpu::ImageUsageFlag::TRANSFER_SRC;
 
-                         return gpu::ImageUsageFlag::Color_Attachment
-                                | gpu::ImageUsageFlag::Transfert_Src;
+                         return gpu::ImageUsageFlag::COLOR_ATTACHMENT | gpu::ImageUsageFlag::TRANSFER_SRC;
                      }();
 
                      const auto clear_value = [&description] noexcept -> gpu::ClearValue {
-                         if (gpu::is_depth_stencil_format(description.format))
-                             return gpu::ClearDepthStencil {};
+                         if (gpu::is_depth_stencil_format(description.format)) return gpu::ClearDepthStencil {};
 
                          return gpu::ClearColor {};
                      }();
@@ -171,7 +160,7 @@ namespace stormkit::engine {
                      return ImageInfo { .id = id,
                                       .create_info =
                                           gpu::Image::CreateInfo {
-                                              .extent = description.extent,
+                                              .extent = description.extent.template to<3>(),
                                               .format = description.format,
                                               .layers = description.layers,
                                               .type   = description.type,
@@ -180,192 +169,179 @@ namespace stormkit::engine {
                                       .clear_value = clear_value,
                                       .name        = name };
                  })
-               | std::ranges::to<std::vector>();
+               | stdr::to<std::vector>();
     }
 
     /////////////////////////////////////
     /////////////////////////////////////
-    auto FrameGraphBuilder::buildBufferPhysicalDescriptions(const GraphTask& task) noexcept
-        -> std::vector<BufferInfo> {
+    auto FrameGraphBuilder::build_buffer_physical_descriptions(const GraphTask& task) noexcept -> std::vector<BufferInfo> {
         return task.creates()
-               | std::views::filter([this](const auto& id) noexcept {
-                     const auto& resource = getResource(id);
+               | stdv::filter([this](const auto& id) noexcept {
+                     const auto& resource = get_resource(id);
 
-                     return is<GraphBuffer>(resource)
-                            and getResource<BufferDescription>(id).transient();
+                     return is<GraphBuffer>(resource) and get_resource<BufferDescription>(id).transient();
                  })
-               | std::views::transform([this](const auto& id) noexcept -> decltype(auto) {
-                     const auto& resource    = getResource<BufferDescription>(id);
+               | stdv::transform([this](const auto& id) noexcept -> decltype(auto) {
+                     const auto& resource    = get_resource<BufferDescription>(id);
                      const auto& description = resource.description();
 
-                     const auto usages
-                         = gpu::BufferUsageFlag::Transfert_Src | gpu::BufferUsageFlag::Storage;
+                     const auto usages = gpu::BufferUsageFlag::TRANSFER_SRC | gpu::BufferUsageFlag::STORAGE;
 
                      const auto& name = resource.name();
 
                      return BufferInfo {
-                         .id = id,
-                         .create_info
-                         = gpu::Buffer::CreateInfo { .usages = usages, .size = description.size },
+                         .id          = id,
+                         .create_info = gpu::Buffer::CreateInfo { .usages = usages, .size = description.size },
                          //.setMemoryProperty(gpu::MemoryPropertyFlag::eDeviceLocal),
                          .name = name
                      };
                  })
-               | std::ranges::to<std::vector>();
+               | stdr::to<std::vector>();
     }
 
     /////////////////////////////////////
     /////////////////////////////////////
-    auto FrameGraphBuilder::buildRenderPassPhysicalDescription(
-        const GraphTask&                    task,
-        HashMap<GraphID, gpu::ImageLayout>& layouts) noexcept -> RenderPassData {
+    auto FrameGraphBuilder::build_renderpass_physical_description(const GraphTask&                    task,
+                                                                  HashMap<GraphID, gpu::ImageLayout>& layouts) noexcept
+      -> RenderPassData {
         auto to_remove = std::vector<GraphID> {};
 
-        const auto creates
-            = task.creates()
-              | std::views::filter([this](const auto resource_id) noexcept {
-                    const auto& resource = getResource(resource_id);
-                    return is<GraphImage>(resource);
-                })
-              | std::views::transform([&, this](const auto id) noexcept {
-                    const auto& resource    = getResource<ImageDescription>(id);
-                    const auto& description = resource.description();
+        const auto creates = task.creates()
+                             | stdv::filter([this](const auto resource_id) noexcept {
+                                   const auto& resource = get_resource(resource_id);
+                                   return is<GraphImage>(resource);
+                               })
+                             | stdv::transform([&, this](const auto id) noexcept {
+                                   const auto& resource    = get_resource<ImageDescription>(id);
+                                   const auto& description = resource.description();
 
-                    auto attachment_description = gpu::AttachmentDescription {
-                        .format             = description.format,
-                        .load_op            = gpu::AttachmentLoadOperation::Clear,
-                        .store_op           = gpu::AttachmentStoreOperation::Store,
-                        .stencil_load_op    = gpu::AttachmentLoadOperation::Dont_Care,
-                        .stencil_store_op   = gpu::AttachmentStoreOperation::Dont_Care,
-                        .source_layout      = gpu::ImageLayout::UNDEFINED,
-                        .destination_layout = gpu::ImageLayout::Color_Attachment_Optimal
-                    };
+                                   auto attachment_description = gpu::AttachmentDescription {
+                                       .format             = description.format,
+                                       .load_op            = gpu::AttachmentLoadOperation::CLEAR,
+                                       .store_op           = gpu::AttachmentStoreOperation::STORE,
+                                       .stencil_load_op    = gpu::AttachmentLoadOperation::DONT_CARE,
+                                       .stencil_store_op   = gpu::AttachmentStoreOperation::DONT_CARE,
+                                       .source_layout      = gpu::ImageLayout::UNDEFINED,
+                                       .destination_layout = gpu::ImageLayout::COLOR_ATTACHMENT_OPTIMAL
+                                   };
 
-                    if (is_depth_stencil_format(description.format)) [[unlikely]] {
-                        std::swap(attachment_description.load_op,
-                                  attachment_description.stencil_load_op);
-                        std::swap(attachment_description.store_op,
-                                  attachment_description.stencil_store_op);
-                        attachment_description.destination_layout
-                            = gpu::ImageLayout::Depth_Stencil_Attachment_Optimal;
-                    }
+                                   if (is_depth_stencil_format(description.format)) [[unlikely]] {
+                                       std::swap(attachment_description.load_op, attachment_description.stencil_load_op);
+                                       std::swap(attachment_description.store_op, attachment_description.stencil_store_op);
+                                       attachment_description.destination_layout = gpu::ImageLayout::
+                                         DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+                                   }
 
-                    layouts[id] = attachment_description.destination_layout;
+                                   layouts[id] = attachment_description.destination_layout;
 
-                    return attachment_description;
-                })
-              | std::ranges::to<std::vector>();
+                                   return attachment_description;
+                               })
+                             | stdr::to<std::vector>();
 
         const auto writes = task.writes()
-                            | std::views::filter([this](const auto id) noexcept {
-                                  const auto& resource = getResource(id);
+                            | stdv::filter([this](const auto id) noexcept {
+                                  const auto& resource = get_resource(id);
                                   return is<GraphImage>(resource);
                               })
-                            | std::views::transform([&, this](const auto id) {
-                                  const auto& resource    = getResource<ImageDescription>(id);
+                            | stdv::transform([&, this](const auto id) {
+                                  const auto& resource    = get_resource<ImageDescription>(id);
                                   const auto& description = resource.description();
 
                                   auto attachment_description = gpu::AttachmentDescription {
-                                      .format           = description.format,
-                                      .load_op          = gpu::AttachmentLoadOperation::Clear,
-                                      .store_op         = gpu::AttachmentStoreOperation::Store,
-                                      .stencil_load_op  = gpu::AttachmentLoadOperation::Dont_Care,
-                                      .stencil_store_op = gpu::AttachmentStoreOperation::Dont_Care,
-                                      .source_layout    = layouts.at(id),
+                                      .format             = description.format,
+                                      .load_op            = gpu::AttachmentLoadOperation::CLEAR,
+                                      .store_op           = gpu::AttachmentStoreOperation::STORE,
+                                      .stencil_load_op    = gpu::AttachmentLoadOperation::DONT_CARE,
+                                      .stencil_store_op   = gpu::AttachmentStoreOperation::DONT_CARE,
+                                      .source_layout      = layouts.at(id),
                                       .destination_layout = layouts.at(id)
                                   };
 
                                   if (is_depth_stencil_format(description.format)) [[unlikely]] {
-                                      std::swap(attachment_description.load_op,
-                                                attachment_description.stencil_load_op);
-                                      std::swap(attachment_description.store_op,
-                                                attachment_description.stencil_store_op);
-                                      attachment_description.destination_layout
-                                          = gpu::ImageLayout::Depth_Stencil_Attachment_Optimal;
+                                      std::swap(attachment_description.load_op, attachment_description.stencil_load_op);
+                                      std::swap(attachment_description.store_op, attachment_description.stencil_store_op);
+                                      attachment_description.destination_layout = gpu::ImageLayout::
+                                        DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
                                   }
 
                                   layouts[id] = attachment_description.destination_layout;
 
                                   return attachment_description;
                               })
-                            | std::ranges::to<std::vector>();
+                            | stdr::to<std::vector>();
 
         const auto reads = task.reads()
-                           | std::views::filter([this](const auto id) noexcept {
-                                 const auto& resource = getResource(id);
+                           | stdv::filter([this](const auto id) noexcept {
+                                 const auto& resource = get_resource(id);
                                  return is<GraphImage>(resource);
                              })
-                           | std::views::transform([&, this](const auto id) {
-                                 const auto& resource    = getResource<ImageDescription>(id);
+                           | stdv::transform([&, this](const auto id) {
+                                 const auto& resource    = get_resource<ImageDescription>(id);
                                  const auto& description = resource.description();
 
                                  auto attachment_description = gpu::AttachmentDescription {
                                      .format             = description.format,
-                                     .load_op            = gpu::AttachmentLoadOperation::Load,
-                                     .store_op           = gpu::AttachmentStoreOperation::Dont_Care,
-                                     .stencil_load_op    = gpu::AttachmentLoadOperation::Dont_Care,
-                                     .stencil_store_op   = gpu::AttachmentStoreOperation::Dont_Care,
+                                     .load_op            = gpu::AttachmentLoadOperation::LOAD,
+                                     .store_op           = gpu::AttachmentStoreOperation::DONT_CARE,
+                                     .stencil_load_op    = gpu::AttachmentLoadOperation::DONT_CARE,
+                                     .stencil_store_op   = gpu::AttachmentStoreOperation::DONT_CARE,
                                      .source_layout      = layouts.at(id),
                                      .destination_layout = layouts.at(id)
                                  };
 
-                                 if (std::ranges::any_of(task.writes(), monadic::is(id))) {
+                                 if (stdr::contains(task.writes(), id)) {
                                      to_remove.emplace_back(id);
-                                     attachment_description.store_op
-                                         = gpu::AttachmentStoreOperation::Store;
+                                     attachment_description.store_op = gpu::AttachmentStoreOperation::STORE;
                                  }
 
                                  if (is_depth_stencil_format(description.format)) [[unlikely]] {
-                                     std::swap(attachment_description.load_op,
-                                               attachment_description.stencil_load_op);
-                                     std::swap(attachment_description.store_op,
-                                               attachment_description.stencil_store_op);
-                                     attachment_description.destination_layout
-                                         = gpu::ImageLayout::Depth_Stencil_Attachment_Optimal;
+                                     std::swap(attachment_description.load_op, attachment_description.stencil_load_op);
+                                     std::swap(attachment_description.store_op, attachment_description.stencil_store_op);
+                                     attachment_description.destination_layout = gpu::ImageLayout::
+                                       DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
                                  }
 
                                  layouts[id] = attachment_description.destination_layout;
 
                                  return attachment_description;
                              })
-                           | std::ranges::to<std::vector>();
+                           | stdr::to<std::vector>();
 
-        auto output = RenderPassData {};
-        output.description.attachments
-            = move_and_concat(std::move(creates), std::move(reads), std::move(writes));
+        auto output                    = RenderPassData {};
+        output.description.attachments = move_and_concat(std::move(creates), std::move(reads), std::move(writes));
 
         auto color_refs = std::vector<gpu::Subpass::Ref> {};
         color_refs.reserve(std::size(output.description.attachments));
 
         auto depth_attachment_ref = std::optional<gpu::Subpass::Ref> {};
-        for (auto&& [i, attachment] : output.description.attachments | std::views::enumerate) {
+        // for (auto&& [i, attachment] : output.description.attachments | stdv::enumerate) {
+        auto i = 0u;
+        for (auto&& attachment : output.description.attachments) {
             if (is_depth_format(attachment.format))
-                depth_attachment_ref
-                    = gpu::Subpass::Ref { .attachment_id = as<u32>(i),
-                                          .layout        = attachment.destination_layout };
+                depth_attachment_ref = gpu::Subpass::Ref { .attachment_id = as<u32>(i), .layout = attachment.destination_layout };
             else
-                color_refs.emplace_back(
-                    gpu::Subpass::Ref { .attachment_id = as<u32>(i),
-                                        .layout        = attachment.destination_layout });
+                color_refs
+                  .emplace_back(gpu::Subpass::Ref { .attachment_id = as<u32>(i), .layout = attachment.destination_layout });
+
+            ++i;
         }
 
         // TODO support multiple subpasses
         output.description.subpasses.emplace_back(gpu::Subpass {
-            .bind_point = task.type() == GraphTask::Type::Raster ? gpu::PipelineBindPoint::Graphics
-                                                                 : gpu::PipelineBindPoint::Compute,
-            .color_attachment_refs = std::move(color_refs),
-            .depth_attachment_ref  = std::move(depth_attachment_ref) });
+          .bind_point            = task.type() == GraphTask::Type::RASTER ? gpu::PipelineBindPoint::GRAPHICS
+                                                                          : gpu::PipelineBindPoint::COMPUTE,
+          .color_attachment_refs = std::move(color_refs),
+          .depth_attachment_ref  = std::move(depth_attachment_ref) });
 
         return output;
     }
 
-    auto FrameGraphBuilder::allocatePhysicalResources(const gpu::CommandPool& command_pool,
-                                                      const gpu::Device&      device)
-        -> std::pair<Ref<const gpu::Image>, BakedFrameGraph::Data> {
+    auto FrameGraphBuilder::allocate_physical_resources(const gpu::CommandPool& command_pool, const gpu::Device& device)
+      -> std::pair<Ref<const gpu::Image>, BakedFrameGraph::Data> {
         using Data = BakedFrameGraph::Data;
 
         auto output = Data {};
-        output.cmb  = command_pool.create_command_buffer(device);
+        output.cmb  = *command_pool.create_command_buffer();
         device.set_object_name(*output.cmb, "FrameGraph:CommandBuffer:Main");
 
         output.semaphore = *gpu::Semaphore::create(device);
@@ -386,14 +362,13 @@ namespace stormkit::engine {
             output.image_views.reserve(std::size(output.image_views) + std::size(pass.images));
 
             for (auto&& buffer : pass.buffers) {
-                auto& gpu_buffer
-                    = output.buffers.emplace_back(gpu::Buffer::create(device, buffer.create_info)
-                                                      .transform_error(expects())
-                                                      .value());
+                auto& gpu_buffer = output.buffers.emplace_back(gpu::Buffer::create(device, buffer.create_info)
+                                                                 .transform_error(sm::assert())
+                                                                 .value());
                 device.set_object_name(gpu_buffer, std::format("FrameGraph:Buffer:{}", buffer.name));
             }
 
-            auto extent       = math::ExtentU {};
+            auto extent       = math::Extent2<u32> {};
             auto clear_values = std::vector<gpu::ClearValue> {};
             auto attachments  = std::vector<Ref<const gpu::ImageView>> {};
             for (const auto& image : pass.images) {
@@ -401,20 +376,19 @@ namespace stormkit::engine {
                 extent.height = std::max(image.create_info.extent.height, extent.height);
 
                 clear_values.emplace_back(image.clear_value);
-                auto& gpu_image
-                    = output.images.emplace_back(gpu::Image::create(device, image.create_info)
-                                                     .transform_error(expects())
-                                                     .value());
+                auto& gpu_image = output.images.emplace_back(gpu::Image::create(device, image.create_info)
+                                                               .transform_error(sm::assert())
+                                                               .value());
                 device.set_object_name(gpu_image, std::format("FrameGraph:Image:{}", image.name));
 
                 if (image.id == m_final_resource) backbuffer = &gpu_image;
 
-                auto& gpu_image_view = output.image_views.emplace_back(
-                    gpu::ImageView::create(device, gpu_image).transform_error(expects()).value());
-                device.set_object_name(gpu_image_view,
-                                     std::format("FrameGraph:ImageView:{}", image.name));
+                auto& gpu_image_view = output.image_views.emplace_back(gpu::ImageView::create(device, gpu_image)
+                                                                         .transform_error(sm::assert())
+                                                                         .value());
+                device.set_object_name(gpu_image_view, std::format("FrameGraph:ImageView:{}", image.name));
 
-                attachments.emplace_back(gpu_image_view);
+                attachments.emplace_back(as_ref(gpu_image_view));
             }
 
             expects(backbuffer != nullptr, "No final resource set !");
@@ -425,41 +399,39 @@ namespace stormkit::engine {
             auto framebuffer = *gpu::FrameBuffer::create(device, renderpass, extent, attachments);
             device.set_object_name(framebuffer, std::format("FrameGraph:FrameBuffer:{}", pass.name));
 
-            auto cmb = command_pool.create_command_buffer(device, gpu::CommandBufferLevel::Secondary);
+            auto cmb = *command_pool.create_command_buffer(gpu::CommandBufferLevel::SECONDARY);
             device.set_object_name(cmb, std::format("FrameGraph:CommandBuffer:{}", pass.name));
 
-            cmb.begin(false, gpu::InheritanceInfo { &renderpass, 0, &framebuffer });
-            auto&& graph_task = getTask(pass.id);
-            graph_task.onExecute(m_datas[pass.id].front(), &renderpass, cmb);
-            cmb.end();
+            auto& task = as<BakedFrameGraph::Data::RasterTask>(output.tasks.emplace_back(BakedFrameGraph::Data::RasterTask {
+              .id           = pass.id,
+              .cmb          = std::move(cmb),
+              .clear_values = std::move(clear_values),
+              .renderpass   = std::move(renderpass),
+              .framebuffer  = std::move(framebuffer) }));
 
-            output.tasks.emplace_back(
-                BakedFrameGraph::Data::RasterTask { .id           = pass.id,
-                                                    .cmb          = std::move(cmb),
-                                                    .clear_values = std::move(clear_values),
-                                                    .renderpass   = std::move(renderpass),
-                                                    .framebuffer  = std::move(framebuffer) });
+            task.cmb.begin(false, gpu::InheritanceInfo { as_ref(task.renderpass), 0, as_opt_ref(task.framebuffer) });
+            auto&& graph_task = get_task(pass.id);
+            graph_task.on_execute(m_datas[pass.id].front(), as_opt_ref_mut(renderpass), task.cmb, output);
+            task.cmb.end();
         }
 
         output.cmb->begin();
-        const auto visitors
-            = Overloaded { [&output](const BakedFrameGraph::Data::RasterTask& task) {
-                              output.cmb->begin_render_pass(task.renderpass,
-                                                          task.framebuffer,
-                                                          task.clear_values,
-                                                          true);
+        const auto visitors = Overloaded {
+            [&output](const BakedFrameGraph::Data::RasterTask& task) {
+                output.cmb->begin_render_pass(task.renderpass, task.framebuffer, task.clear_values, true);
 
-                              const auto command_buffers = as_refs<std::array>(task.cmb);
-                              output.cmb->execute_sub_command_buffers(command_buffers);
-                              output.cmb->end_render_pass();
-                          },
-                           [&output](const BakedFrameGraph::Data::ComputeTask& task) {
-                               const auto command_buffers = as_refs<std::array>(task.cmb);
-                               output.cmb->execute_sub_command_buffers(command_buffers);
-                           } };
+                const auto command_buffers = as_refs<std::array>(task.cmb);
+                output.cmb->execute_sub_command_buffers(command_buffers);
+                output.cmb->end_render_pass();
+            },
+            [&output](const BakedFrameGraph::Data::ComputeTask& task) {
+                const auto command_buffers = as_refs<std::array>(task.cmb);
+                output.cmb->execute_sub_command_buffers(command_buffers);
+            }
+        };
         for (auto&& task : output.tasks) std::visit(visitors, task);
         output.cmb->end();
 
-        return std::make_pair(Ref { backbuffer }, std::move(output));
+        return std::make_pair(as_ref(backbuffer), std::move(output));
     } // namespace stormkit::engine
 } // namespace stormkit::engine

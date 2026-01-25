@@ -6,12 +6,11 @@ module;
 
 #include <stormkit/core/platform_macro.hpp>
 
-export module stormkit.Engine:ECS.CommonComponents;
+export module stormkit.engine:ecs.common_components;
 
 import std;
 
-import stormkit.core;
-import stormkit.entities;
+import stormkit;
 
 using namespace stormkit::entities::literals;
 
