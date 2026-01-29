@@ -10,7 +10,9 @@ export module stormkit.engine:ecs.sprite_render_system;
 
 import std;
 
-import stormkit;
+import stormkit.core;
+import stormkit.entities;
+import stormkit.gpu;
 
 import :renderer;
 import :sprite_renderer;

@@ -6,7 +6,8 @@ module stormkit.engine;
 
 import std;
 
-import stormkit;
+import stormkit.core;
+import stormkit.gpu;
 
 import :sprite_renderer;
 

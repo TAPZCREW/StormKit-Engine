@@ -10,7 +10,9 @@ export module stormkit.engine:renderer.render_surface;
 
 import std;
 
-import stormkit;
+import stormkit.core;
+import stormkit.gpu;
+import stormkit.wsi;
 
 export namespace stormkit::engine {
     class Renderer;
@@ -19,13 +21,17 @@ export namespace stormkit::engine {
         struct PrivateFuncTag {};
 
       public:
+        struct SubmissionResources {
+            gpu::Fence     in_flight;
+            gpu::Semaphore image_available;
+            gpu::Semaphore render_finished;
+        };
+
         struct Frame {
             u32 current_frame;
             u32 image_index;
 
-            Ref<const gpu::Semaphore> image_available;
-            Ref<const gpu::Semaphore> render_finished;
-            Ref<const gpu::Fence>     in_flight;
+            Ref<const SubmissionResources> submission_resources;
         };
 
         ~RenderSurface() noexcept;
@@ -55,14 +61,12 @@ export namespace stormkit::engine {
       private:
         auto do_init(const Renderer& renderer, const wsi::Window& window) noexcept -> gpu::Expected<void>;
 
-        DeferInit<gpu::Surface>       m_surface;
-        DeferInit<gpu::SwapChain>     m_swapchain;
-        std::optional<gpu::SwapChain> m_old_swapchain;
-
-        usize                       m_current_frame = 0;
-        std::vector<gpu::Semaphore> m_image_availables;
-        std::vector<gpu::Semaphore> m_render_finisheds;
-        std::vector<gpu::Fence>     m_in_flight_fences;
+        DeferInit<gpu::Surface>          m_surface;
+        DeferInit<gpu::SwapChain>        m_swapchain;
+        std::optional<gpu::SwapChain>    m_old_swapchain;
+        u32                              m_buffering_count = 0;
+        usize                            m_current_frame   = 0;
+        std::vector<SubmissionResources> m_submission_resources;
 
         bool m_need_recreate;
     };
@@ -77,21 +81,19 @@ namespace stormkit::engine {
     /////////////////////////////////////
     STORMKIT_FORCE_INLINE
     constexpr RenderSurface::RenderSurface(PrivateFuncTag) noexcept {
-        for (auto&& fence : m_in_flight_fences) auto _ = fence.wait();
     }
 
     /////////////////////////////////////
     /////////////////////////////////////
     STORMKIT_FORCE_INLINE
     RenderSurface::~RenderSurface() noexcept {
-        for (auto&& fence : m_in_flight_fences) auto _ = fence.wait();
+        for (auto&& [fence, _, _] : m_submission_resources) auto _ = fence.wait();
     }
 
     /////////////////////////////////////
     /////////////////////////////////////
     STORMKIT_FORCE_INLINE
-    RenderSurface::RenderSurface(RenderSurface&&) noexcept
-      = default;
+    RenderSurface::RenderSurface(RenderSurface&&) noexcept = default;
 
     /////////////////////////////////////
     /////////////////////////////////////
@@ -121,7 +123,7 @@ namespace stormkit::engine {
     /////////////////////////////////////
     STORMKIT_FORCE_INLINE
     auto RenderSurface::buffering_count() const noexcept -> u32 {
-        return as<u32>(std::size(images()));
+        return m_buffering_count;
     }
 
     /////////////////////////////////////

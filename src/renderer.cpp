@@ -1,12 +1,15 @@
 module;
 
+#include <stormkit/core/try_expected.hpp>
 #include <stormkit/log/log_macro.hpp>
 
 module stormkit.engine;
 
 import std;
 
-import stormkit;
+import stormkit.core;
+import stormkit.log;
+import stormkit.gpu;
 
 import :renderer;
 import :renderer.framegraph;
@@ -17,13 +20,13 @@ namespace stdr = std::ranges;
 namespace cm   = stormkit::monadic;
 
 namespace stormkit::engine {
-    LOGGER("stormkit.Renderer")
+    LOGGER("Renderer")
 
     namespace {
-        constexpr auto RAYTRACING_EXTENSIONS = std::array {
-            "VK_KHR_ray_tracing_pipeline"sv,     "VK_KHR_acceleration_structure"sv, "VK_KHR_buffer_device_address"sv,
-            "VK_KHR_deferred_host_operations"sv, "VK_EXT_descriptor_indexing"sv,    "VK_KHR_spirv_1_4"sv,
-            "VK_KHR_shader_float_controls"sv
+        constexpr auto RAYTRACING_EXTENSIONS = std::array<std::string_view, 0> {
+            // "VK_KHR_ray_tracing_pipeline"sv,     "VK_KHR_acceleration_structure"sv, "VK_KHR_buffer_device_address"sv,
+            // "VK_KHR_deferred_host_operations"sv, "VK_EXT_descriptor_indexing"sv,    "VK_KHR_spirv_1_4"sv,
+            // "VK_KHR_shader_float_controls"sv
         };
 
         constexpr auto BASE_EXTENSIONS = std::array { "VK_KHR_maintenance3"sv };
@@ -78,80 +81,60 @@ namespace stormkit::engine {
 
             return ranked_devices.rbegin()->second;
         }
-
-        /////////////////////////////////////
-        /////////////////////////////////////
-        // auto
-        //     chooseSwapExtent(const math::Extent2<u32>&      extent,
-        //                      const gpu::SurfaceCapabilities& capabilities) noexcept ->
-        //                      gpu::Extent2<u32> {
-        //     constexpr static auto int_max = std::numeric_limits<u32>::max();
-        //
-        //     if (capabilities.currentExtent.width != int_max &&
-        //         capabilities.currentExtent.height != int_max)
-        //         return capabilities.currentExtent;
-        //
-        //     auto actual_extent   = extent;
-        //     actual_extent.width  = math::clamp(actual_extent.width,
-        //                                             capabilities.minImageExtent.width,
-        //                                             capabilities.maxImageExtent.width);
-        //     actual_extent.height = math::clamp(actual_extent.height,
-        //                                              capabilities.minImageExtent.height,
-        //                                              capabilities.maxImageExtent.height);
-        //
-        //     return actual_extent;
-        // }
-        //
-        // /////////////////////////////////////
-        // /////////////////////////////////////
-        // auto chooseImageCount(const gpu::SurfaceCapabilities& capabilities) noexcept
-        //     -> u32 {
-        //     auto image_count = capabilities.minImageCount + 1;
-        //     return math::clamp(image_count,
-        //                              capabilities.minImageCount,
-        //                              capabilities.maxImageCount);
-        // }
     } // namespace
 
     /////////////////////////////////////
     /////////////////////////////////////
     auto Renderer::do_init(std::string_view application_name, OptionalRef<const wsi::Window> window) noexcept
       -> gpu::Expected<void> {
-        ilog("Initializing Renderer");
-        return do_init_instance(application_name)
-          .and_then(bind_front(&Renderer::do_init_device, this))
-          .transform(bind_front(gpu::Queue::create, as_ref(m_device), m_device->raster_queue_entry()))
-          .transform(cm::set(m_raster_queue))
-          .and_then(bind_front(gpu::CommandPool::create, as_ref(m_device)))
-          .transform(cm::set(m_main_command_pool))
-          .and_then(bind_front(&Renderer::do_init_render_surface, this, std::move(window)));
+        ilog("Initializing Renderer...");
+        Try(gpu::initialize_backend());
+        ilog("Vulkan backend successfully initialized. ✓");
+        Try(do_init_instance(application_name));
+        ilog("GPU instance successfully initialized. ✓");
+        Try(do_init_device());
+        ilog("GPU device successfully initialized. ✓");
+
+        m_raster_queue      = gpu::Queue::create(*m_device, m_device->raster_queue_entry());
+        m_main_command_pool = Try(gpu::CommandPool::create(*m_device));
+        ilog("GPU main command pool successfully initialized. ✓");
+
+        Try(do_init_render_surface(std::move(window)));
+        ilog("GPU windowed render surface successfully initialized. ✓");
+
+        ilog("Renderer initialized!");
+        Return {};
     }
 
     /////////////////////////////////////
     /////////////////////////////////////
     auto Renderer::do_init_instance(std::string_view application_name) noexcept -> gpu::Expected<void> {
-        return gpu::Instance::create(std::string { application_name }).transform(cm::set(m_instance));
+        m_instance = Try(gpu::Instance::create(std::string { application_name }, false));
+
+        Return {};
     }
 
     /////////////////////////////////////
     /////////////////////////////////////
     auto Renderer::do_init_device() noexcept -> gpu::Expected<void> {
         const auto& physical_devices = m_instance->physical_devices();
-        auto        physical_device  = pick_physical_device(physical_devices);
+        const auto& physical_device  = pick_physical_device(physical_devices);
 
         ilog("Using physical device {}", *physical_device);
 
-        return gpu::Device::create(*physical_device, *m_instance).transform(cm::set(m_device));
+        m_device = Try(gpu::Device::allocate(physical_device, m_instance));
+
+        Return {};
     }
 
     /////////////////////////////////////
     /////////////////////////////////////
     auto Renderer::do_init_render_surface(OptionalRef<const wsi::Window> window) noexcept -> gpu::Expected<void> {
-        if (window) return RenderSurface::create(*this, *window).transform(cm::set(m_surface));
+        if (not window) ensures(not window, "Offscreen rendering not yet implemented");
 
-        ensures(not window, "Offscreen rendering not yet implemented");
+        m_surface = Try(RenderSurface::create(*this, *window));
 
-        return {};
+        Return {};
     }
 
     /////////////////////////////////////
@@ -160,17 +143,16 @@ namespace stormkit::engine {
       -> void {
         set_current_thread_name("StormKit:RenderThread");
 
-        m_command_buffers = *m_main_command_pool->create_command_buffers(m_surface->buffering_count());
-
-        m_framegraphs.resize(m_surface->buffering_count());
+        m_command_buffers = TryAssert(m_main_command_pool->create_command_buffers(m_surface->buffering_count()),
+                                      "Failed to create main command buffers");
 
         for (;;) {
             if (token.stop_requested()) return;
 
-            m_surface->begin_frame(m_device)
-              .and_then(bind_front(&Renderer::do_render, this, std::ref(framegraph_mutex), std::ref(rebuild_graph)))
-              .and_then(bind_front(&RenderSurface::present_frame, &m_surface.get(), as_ref(m_raster_queue)))
-              .transform_error(cm::assert("Failed to render frame"));
+            TryAssert(m_surface->begin_frame(*m_device)
+                        .and_then(bind_front(&Renderer::do_render, this, std::ref(framegraph_mutex), std::ref(rebuild_graph)))
+                        .and_then(bind_front(&RenderSurface::present_frame, &m_surface.get(), as_ref(m_raster_queue))),
+                      "Failed to render frame");
         }
 
         m_device->wait_idle();
@@ -181,53 +163,50 @@ namespace stormkit::engine {
     auto Renderer::do_render(std::mutex& framegraph_mutex, std::atomic_bool& rebuild_graph, RenderSurface::Frame&& frame) noexcept
       -> gpu::Expected<RenderSurface::Frame> {
         if (rebuild_graph) {
-            auto _ = std::unique_lock { framegraph_mutex };
-            m_graph_builder.bake();
-
-            for (auto&& framegraph : m_framegraphs) framegraph = m_graph_builder.create_framegraph(m_device, m_main_command_pool);
+            auto  _         = std::unique_lock { framegraph_mutex };
+            auto& frame     = m_in_flight_frames.emplace_back(m_frame_builder.make_frame());
+            m_current_frame = as_opt_ref_mut(frame);
 
             rebuild_graph = false;
         }
 
-        auto&& framegraph = m_framegraphs[frame.current_frame];
-
-        auto&& present_image = m_surface->images()[frame.current_frame];
+        auto&& present_image = m_surface->images()[frame.image_index];
         auto&& blit_cmb      = m_command_buffers[frame.current_frame];
 
         blit_cmb.reset();
         blit_cmb.begin(true);
-        auto&& result = framegraph->execute(m_raster_queue);
-        if (not result) return std::unexpected { result.error() };
+        // auto&& result = framegraph->execute(m_raster_queue);
+        // if (not result) return std::unexpected { result.error() };
 
-        auto&& semaphore  = *result;
-        auto&& backbuffer = framegraph->backbuffer();
-        blit_cmb.transition_image_layout(backbuffer,
-                                         gpu::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-                                         gpu::ImageLayout::TRANSFER_SRC_OPTIMAL);
-        blit_cmb.transition_image_layout(present_image, gpu::ImageLayout::PRESENT_SRC, gpu::ImageLayout::TRANSFER_DST_OPTIMAL);
-        blit_cmb
-          .blit_image(backbuffer,
-                      present_image,
-                      gpu::ImageLayout::TRANSFER_SRC_OPTIMAL,
-                      gpu::ImageLayout::TRANSFER_DST_OPTIMAL,
-                      std::array {
-                        gpu::BlitRegion { .src        = {},
-                                         .dst        = {},
-                                         .src_offset = { math::vec3i { 0, 0, 0 }, backbuffer.extent().to<i32>(), },
-                                         .dst_offset = { math::vec3i { 0, 0, 0 }, present_image.extent().to<i32>(), } }
-        },
-                      gpu::Filter::LINEAR);
-        blit_cmb.transition_image_layout(backbuffer,
-                                         gpu::ImageLayout::TRANSFER_SRC_OPTIMAL,
-                                         gpu::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
-        blit_cmb.transition_image_layout(present_image, gpu::ImageLayout::TRANSFER_DST_OPTIMAL, gpu::ImageLayout::PRESENT_SRC);
+        // auto&& semaphore  = *result;
+        // auto&& backbuffer = framegraph->backbuffer();
+        // blit_cmb.transition_image_layout(backbuffer,
+        //                                  gpu::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+        //                                  gpu::ImageLayout::TRANSFER_SRC_OPTIMAL);
+        // blit_cmb.transition_image_layout(present_image, gpu::ImageLayout::PRESENT_SRC, gpu::ImageLayout::TRANSFER_DST_OPTIMAL);
+        // blit_cmb
+        //   .blit_image(backbuffer,
+        //               present_image,
+        //               gpu::ImageLayout::TRANSFER_SRC_OPTIMAL,
+        //               gpu::ImageLayout::TRANSFER_DST_OPTIMAL,
+        //               std::array {
+        //                 gpu::BlitRegion { .src        = {},
+        //                                  .dst        = {},
+        //                                  .src_offset = { math::vec3i { 0, 0, 0 }, backbuffer.extent().to<i32>(), },
+        //                                  .dst_offset = { math::vec3i { 0, 0, 0 }, present_image.extent().to<i32>(), } }
+        // },
+        //               gpu::Filter::LINEAR);
+        // blit_cmb.transition_image_layout(backbuffer,
+        //                                  gpu::ImageLayout::TRANSFER_SRC_OPTIMAL,
+        //                                  gpu::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
+        // blit_cmb.transition_image_layout(present_image, gpu::ImageLayout::TRANSFER_DST_OPTIMAL, gpu::ImageLayout::PRESENT_SRC);
         blit_cmb.end();
 
-        auto wait       = as_refs<std::array>(semaphore, frame.image_available);
-        auto stage_mask = std::array { gpu::PipelineStageFlag::COLOR_ATTACHMENT_OUTPUT, gpu::PipelineStageFlag::TRANSFER };
-        auto signal     = as_refs<std::array>(frame.render_finished);
+        auto wait       = as_refs<std::array>(/*semaphore, */ frame.submission_resources->image_available);
+        auto stage_mask = std::array { gpu::PipelineStageFlag::COLOR_ATTACHMENT_OUTPUT }; //, gpu::PipelineStageFlag::TRANSFER };
+        auto signal     = as_refs<std::array>(frame.submission_resources->render_finished);
 
-        blit_cmb.submit(m_raster_queue, wait, stage_mask, signal, frame.in_flight);
+        blit_cmb.submit(m_raster_queue, wait, stage_mask, signal, as_ref(frame.submission_resources->in_flight));
         return frame;
     }
 } // namespace stormkit::engine
