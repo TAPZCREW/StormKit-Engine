@@ -39,7 +39,8 @@ namespace stormkit::engine {
         wsi::lua::init_lua(engine.global_namespace());
         gpu::lua::init_lua(engine.global_namespace());
 
-        m_renderer = TryAssert(Renderer::create(application_name, as_opt_ref(m_window)), "Failed to initialize renderer. ❌");
+        m_renderer = TryAssert(Renderer::create(application_name, m_thread_pool, as_opt_ref(m_window)),
+                               "Failed to initialize renderer. ❌");
 
         m_world = entities::EntityManager {};
 

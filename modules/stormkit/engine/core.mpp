@@ -46,7 +46,7 @@ export namespace stormkit::engine {
         template<typename T>
         using Expected = std::expected<T, ApplicationError>;
 
-        using BuildFrameClosure = std::function<void(NEWFrameBuilder&)>;
+        using BuildFrameClosure = std::function<void(FrameBuilder&)>;
 
         explicit constexpr Application(PrivateTag) noexcept;
         ~Application();
@@ -80,6 +80,7 @@ export namespace stormkit::engine {
                      const math::Extent2<u32>& window_extent,
                      std::string&&             window_title) noexcept -> Expected<void>;
 
+        ThreadPool              m_thread_pool;
         DeferInit<wsi::Window>  m_window;
         DeferInit<luau::Engine> m_lua_engine;
         DeferInit<Renderer>     m_renderer;

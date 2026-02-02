@@ -87,6 +87,8 @@ namespace stormkit::engine {
     /////////////////////////////////////
     auto Renderer::do_init(std::string_view application_name, OptionalRef<const wsi::Window> window) noexcept
       -> gpu::Expected<void> {
+        m_extent = window->extent();
+
         ilog("Initializing Renderer...");
         Try(gpu::initialize_backend());
         ilog("Vulkan backend successfully initialized. ✓");
@@ -109,7 +111,7 @@ namespace stormkit::engine {
     /////////////////////////////////////
     /////////////////////////////////////
     auto Renderer::do_init_instance(std::string_view application_name) noexcept -> gpu::Expected<void> {
-        m_instance = Try(gpu::Instance::create(std::string { application_name }, false));
+        m_instance = Try(gpu::Instance::create(std::string { application_name }, true));
 
         Return {};
     }
@@ -147,12 +149,11 @@ namespace stormkit::engine {
                                       "Failed to create main command buffers");
 
         for (;;) {
-            if (token.stop_requested()) return;
+            if (token.stop_requested()) break;
 
-            TryAssert(m_surface->begin_frame(*m_device)
-                        .and_then(bind_front(&Renderer::do_render, this, std::ref(framegraph_mutex), std::ref(rebuild_graph)))
-                        .and_then(bind_front(&RenderSurface::present_frame, &m_surface.get(), as_ref(m_raster_queue))),
-                      "Failed to render frame");
+            auto frame = TryAssert(m_surface->begin_frame(*m_device), "Faield to start frame!");
+            TryAssert(do_render(framegraph_mutex, rebuild_graph, frame), "Failed to render frame!");
+            TryAssert(m_surface->present_frame(m_raster_queue, frame), "Failed to present frame!");
         }
 
         m_device->wait_idle();
@@ -160,53 +161,69 @@ namespace stormkit::engine {
 
     /////////////////////////////////////
     /////////////////////////////////////
-    auto Renderer::do_render(std::mutex& framegraph_mutex, std::atomic_bool& rebuild_graph, RenderSurface::Frame&& frame) noexcept
-      -> gpu::Expected<RenderSurface::Frame> {
+    auto Renderer::do_render(std::mutex& framegraph_mutex, std::atomic_bool& rebuild_graph, RenderSurface::Frame& frame) noexcept
+      -> gpu::Expected<void> {
         if (rebuild_graph) {
-            auto  _         = std::unique_lock { framegraph_mutex };
-            auto& frame     = m_in_flight_frames.emplace_back(m_frame_builder.make_frame());
-            m_current_frame = as_opt_ref_mut(frame);
+            auto _ = std::unique_lock { framegraph_mutex };
+
+            for (auto&& frame : m_frames) m_frame_pool.recycle_frame(std::move(*frame));
+
+            m_frames.clear();
+            m_frames.resize(m_surface->buffering_count());
 
             rebuild_graph = false;
         }
 
+        auto& current_frame = m_frames[frame.current_frame];
+
+        if (not current_frame.initialized())
+            current_frame = Try(m_frame_builder
+                                  .make_frame(*m_device,
+                                              m_raster_queue,
+                                              m_main_command_pool,
+                                              m_frame_pool,
+                                              { .x      = 0,
+                                                .y      = 0,
+                                                .width  = m_extent.to<i32>().width,
+                                                .height = m_extent.to<i32>().height }));
+
         auto&& present_image = m_surface->images()[frame.image_index];
         auto&& blit_cmb      = m_command_buffers[frame.current_frame];
 
-        blit_cmb.reset();
-        blit_cmb.begin(true);
-        // auto&& result = framegraph->execute(m_raster_queue);
-        // if (not result) return std::unexpected { result.error() };
+        Try(blit_cmb.reset());
+        Try(blit_cmb.begin(true));
 
-        // auto&& semaphore  = *result;
-        // auto&& backbuffer = framegraph->backbuffer();
-        // blit_cmb.transition_image_layout(backbuffer,
-        //                                  gpu::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-        //                                  gpu::ImageLayout::TRANSFER_SRC_OPTIMAL);
-        // blit_cmb.transition_image_layout(present_image, gpu::ImageLayout::PRESENT_SRC, gpu::ImageLayout::TRANSFER_DST_OPTIMAL);
-        // blit_cmb
-        //   .blit_image(backbuffer,
-        //               present_image,
-        //               gpu::ImageLayout::TRANSFER_SRC_OPTIMAL,
-        //               gpu::ImageLayout::TRANSFER_DST_OPTIMAL,
-        //               std::array {
-        //                 gpu::BlitRegion { .src        = {},
-        //                                  .dst        = {},
-        //                                  .src_offset = { math::vec3i { 0, 0, 0 }, backbuffer.extent().to<i32>(), },
-        //                                  .dst_offset = { math::vec3i { 0, 0, 0 }, present_image.extent().to<i32>(), } }
-        // },
-        //               gpu::Filter::LINEAR);
-        // blit_cmb.transition_image_layout(backbuffer,
-        //                                  gpu::ImageLayout::TRANSFER_SRC_OPTIMAL,
-        //                                  gpu::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
-        // blit_cmb.transition_image_layout(present_image, gpu::ImageLayout::TRANSFER_DST_OPTIMAL, gpu::ImageLayout::PRESENT_SRC);
-        blit_cmb.end();
+        if (current_frame->fence().status() == gpu::Fence::Status::SIGNALED) {
+            TryAssert(current_frame->fence().wait(), "");
+            current_frame->fence().reset();
+        }
+        const auto& semaphore = Try(current_frame->execute(m_raster_queue));
 
-        auto wait       = as_refs<std::array>(/*semaphore, */ frame.submission_resources->image_available);
-        auto stage_mask = std::array { gpu::PipelineStageFlag::COLOR_ATTACHMENT_OUTPUT }; //, gpu::PipelineStageFlag::TRANSFER };
+        auto& backbuffer = current_frame->backbuffer();
+        blit_cmb.transition_image_layout(backbuffer, gpu::ImageLayout::ATTACHMENT_OPTIMAL, gpu::ImageLayout::TRANSFER_SRC_OPTIMAL)
+          .transition_image_layout(present_image, gpu::ImageLayout::PRESENT_SRC, gpu::ImageLayout::TRANSFER_DST_OPTIMAL)
+        .blit_image(backbuffer,
+                      present_image,
+                      gpu::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                      gpu::ImageLayout::TRANSFER_DST_OPTIMAL,
+                      std::array {
+                        gpu::BlitRegion { .src        = {},
+                                         .dst        = {},
+                                         .src_offset = { math::vec3i { 0, 0, 0 }, backbuffer.extent().to<i32>(), },
+                                         .dst_offset = { math::vec3i { 0, 0, 0 }, present_image.extent().to<i32>(), }, },
+          },
+                      gpu::Filter::LINEAR)
+          .transition_image_layout(backbuffer, gpu::ImageLayout::TRANSFER_SRC_OPTIMAL, gpu::ImageLayout::ATTACHMENT_OPTIMAL)
+        .transition_image_layout(present_image, gpu::ImageLayout::TRANSFER_DST_OPTIMAL, gpu::ImageLayout::PRESENT_SRC);
+
+        Try(blit_cmb.end());
+
+        auto wait       = as_refs<std::array>(semaphore, frame.submission_resources->image_available);
+        auto stage_mask = std::array { gpu::PipelineStageFlag::COLOR_ATTACHMENT_OUTPUT, gpu::PipelineStageFlag::TRANSFER };
         auto signal     = as_refs<std::array>(frame.submission_resources->render_finished);
 
-        blit_cmb.submit(m_raster_queue, wait, stage_mask, signal, as_ref(frame.submission_resources->in_flight));
-        return frame;
+        TryAssert(blit_cmb.submit(m_raster_queue, wait, stage_mask, signal, as_ref(frame.submission_resources->in_flight)), "");
+
+        Return {};
     }
 } // namespace stormkit::engine
