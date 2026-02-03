@@ -72,7 +72,8 @@ add_requireconfs("frozen", "unordered_dense", { configs = {
 add_requires("luau master", {
     configs = {
         extern_c = true,
-        cxflags = { cxx_runtime },
+        shared = false,
+        build_cli = false,
     },
 })
 
