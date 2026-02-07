@@ -20,8 +20,8 @@ export module stormkit.engine:sprite_renderer;
 
 // export namespace stormkit::engine {
 //     struct SpriteVertex {
-//         math::vec2f position;
-//         math::vec2f uv;
+//         math::fvec2 position;
+//         math::fvec2 uv;
 //     };
 
 //    struct Sprite {

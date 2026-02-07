@@ -23,12 +23,14 @@ export namespace stormkit::engine {
         usize size;
 
         bool cull_imune = false;
+
+        auto operator==(const BufferCreateDescription&) const noexcept -> bool;
     };
 
     struct ImageCreateDescription {
         std::string name;
 
-        math::Extent3<u32>  extent;
+        math::uextent3      extent;
         gpu::ImageType      type;
         gpu::PixelFormat    format;
         gpu::ImageUsageFlag usages = gpu::ImageUsageFlag::COLOR_ATTACHMENT;
@@ -36,12 +38,14 @@ export namespace stormkit::engine {
         u32 layers = 1u;
 
         bool cull_imune = false;
+        auto operator==(const ImageCreateDescription&) const noexcept -> bool;
     };
 
     struct ImageReadDescription {
         GraphID            image;
         gpu::ImageViewType type;
         bool               cull_imune = false;
+        auto               operator==(const ImageReadDescription&) const noexcept -> bool;
     };
 
     struct ImageWriteDescription {
@@ -50,6 +54,7 @@ export namespace stormkit::engine {
 
         std::optional<gpu::ClearValue> clear_value;
         bool                           cull_imune = false;
+        auto                           operator==(const ImageWriteDescription&) const noexcept -> bool;
     };
 
     struct RasterTask {
@@ -177,6 +182,8 @@ export namespace stormkit::engine {
             ExecuteClosure execute;
 
             bool cull_imune = false;
+
+            auto operator==(const TaskDescription&) const noexcept -> bool;
         };
 
         using GraphEntry = std::
@@ -197,7 +204,7 @@ export namespace stormkit::engine {
               -> void;
 
           private:
-            explicit FrameTaskBuilder(GraphID, DAG&) noexcept;
+            FrameTaskBuilder(GraphID, DAG&) noexcept;
 
             GraphID m_description_id;
             DAG&    m_dag;
@@ -249,13 +256,13 @@ export namespace stormkit::engine {
         GraphID m_backbuffer = INVALID_ID;
     };
 
-    template<meta::HashValue Ret = hash32>
+    template<meta::HashType Ret = hash32>
     constexpr auto hasher(const BufferCreateDescription& description) noexcept -> Ret;
-    template<meta::HashValue Ret = hash32>
+    template<meta::HashType Ret = hash32>
     constexpr auto hasher(const ImageCreateDescription& description) noexcept -> Ret;
-    template<meta::HashValue Ret = hash32>
+    template<meta::HashType Ret = hash32>
     constexpr auto hasher(const FrameBuilder::TaskDescription& description) noexcept -> Ret;
-    template<meta::HashValue Ret = hash32>
+    template<meta::HashType Ret = hash32>
     constexpr auto hasher(const FrameBuilder::GraphEntry& description) noexcept -> Ret;
 } // namespace stormkit::engine
 
@@ -630,7 +637,7 @@ namespace stormkit::engine {
 
     /////////////////////////////////////
     /////////////////////////////////////
-    template<meta::HashValue Ret = hash32>
+    template<meta::HashType Ret = hash32>
     constexpr auto hasher(const BufferCreateDescription& description) noexcept -> Ret {
         auto hash = Ret { 0 };
 
@@ -641,7 +648,7 @@ namespace stormkit::engine {
 
     /////////////////////////////////////
     /////////////////////////////////////
-    template<meta::HashValue Ret = hash32>
+    template<meta::HashType Ret = hash32>
     constexpr auto hasher(const ImageCreateDescription& description) noexcept -> Ret {
         auto hash = Ret { 0 };
 
@@ -658,7 +665,7 @@ namespace stormkit::engine {
 
     /////////////////////////////////////
     /////////////////////////////////////
-    template<meta::HashValue Ret = hash32>
+    template<meta::HashType Ret = hash32>
     constexpr auto hasher(const FrameBuilder::TaskDescription& description) noexcept -> Ret {
         auto hash = Ret { 0 };
 
@@ -669,15 +676,86 @@ namespace stormkit::engine {
 
     /////////////////////////////////////
     /////////////////////////////////////
-    template<meta::HashValue Ret = hash32>
+    template<meta::HashType Ret = hash32>
     constexpr auto hasher(const FrameBuilder::GraphEntry& description) noexcept -> Ret {
         return std::visit(Overloaded {
                             [](const BufferCreateDescription& value) static noexcept { return hash(value); },
                             [](const ImageCreateDescription& value) static noexcept { return hash(value); },
-                            [](const ImageReadDescription& value) static noexcept { return 0_u32; },
-                            [](const ImageWriteDescription& value) static noexcept { return 0_u32; },
+                            [](const ImageReadDescription&) static noexcept { return 0_u32; },
+                            [](const ImageWriteDescription&) static noexcept { return 0_u32; },
                             [](const FrameBuilder::TaskDescription& value) static noexcept { return hash(value); },
                           },
                           description);
+    }
+
+    /////////////////////////////////////
+    /////////////////////////////////////
+    STORMKIT_FORCE_INLINE
+    inline auto BufferCreateDescription::operator==(const BufferCreateDescription& other) const noexcept -> bool {
+        if (name != other.name) return false;
+        else if (size != other.size)
+            return false;
+        else if (cull_imune != other.cull_imune)
+            return false;
+
+        return true;
+    }
+
+    /////////////////////////////////////
+    /////////////////////////////////////
+    STORMKIT_FORCE_INLINE
+    inline auto ImageCreateDescription::operator==(const ImageCreateDescription& other) const noexcept -> bool {
+        if (name != other.name) return false;
+        else if (extent != other.extent)
+            return false;
+        else if (type != other.type)
+            return false;
+        else if (format != other.format)
+            return false;
+        else if (usages != other.usages)
+            return false;
+        else if (layers != other.layers)
+            return false;
+        else if (cull_imune != other.cull_imune)
+            return false;
+        return true;
+    }
+
+    /////////////////////////////////////
+    /////////////////////////////////////
+    STORMKIT_FORCE_INLINE
+    inline auto ImageReadDescription::operator==(const ImageReadDescription& other) const noexcept -> bool {
+        if (image != other.image) return false;
+        else if (type != other.type)
+            return false;
+        else if (cull_imune != other.cull_imune)
+            return false;
+        return true;
+    }
+
+    /////////////////////////////////////
+    /////////////////////////////////////
+    STORMKIT_FORCE_INLINE
+    inline auto ImageWriteDescription::operator==(const ImageWriteDescription& other) const noexcept -> bool {
+        if (image != other.image) return false;
+        else if (type != other.type)
+            return false;
+        else if (clear_value != other.clear_value)
+            return false;
+        else if (cull_imune != other.cull_imune)
+            return false;
+        return true;
+    }
+
+    /////////////////////////////////////
+    /////////////////////////////////////
+    STORMKIT_FORCE_INLINE
+    inline auto FrameBuilder::TaskDescription::operator==(const FrameBuilder::TaskDescription& other) const noexcept -> bool {
+        if (name != other.name) return false;
+        // else if (execute != other.execute)
+        //     return false;
+        else if (cull_imune != other.cull_imune)
+            return false;
+        return true;
     }
 } // namespace stormkit::engine

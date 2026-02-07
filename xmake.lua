@@ -36,46 +36,73 @@ if get_config("compile_commands") then
 end
 
 local stormkit_dep_name = "stormkit"
+stormkit_rule_prefix = "@stormkit/"
 if has_config("stormkit") then
-    includes("xmake/StormKit.xmake.lua")
-    stormkit_dep_name = "dev_stormkit"
+    -- includes("xmake/StormKit.xmake.lua")
+    -- stormkit_rule_prefix = ""
+    -- includes(path.join(get_config("stormkit"), "xmake", "rules", "**.lua"))
 end
 
-local cxx_isystem = "--cxx-isystem"
-local cxx_runtime = nil
-if get_config("toolchain") == "llvm" then
-    if get_config("sdk") then
-        cxx_isystem = cxx_isystem .. path.join(get_config("sdk"), "include", "c++", "v1")
-    elseif is_plat("linux") or is_plat("darwin") then
-        cxx_isystem = cxx_isystem .. "/usr/include/c++/v1"
-    end
-    if get_config("runtimes") and get_config("runtimes"):startswith("c++") then cxx_runtime = "-stdlib=libc++" end
-end
-
-add_requires(
-    "frozen",
-    "unordered_dense",
-    "tl_function_ref",
-    "vulkan-headers 1.4.335",
-    "volk",
-    "vulkan-memory-allocator v3.3.0",
-    "luabridge3 master",
-    {
-        system = false,
-        runtimes = get_config("toolchain") == "llvm" and get_config("runtimes") or nil,
-    }
-)
-add_requireconfs("frozen", "unordered_dense", { configs = {
-    modules = true,
-} })
-
-add_requires("luau master", {
+add_requires("frozen", {
+    system = false,
     configs = {
-        extern_c = true,
+        modules = true,
+        std_import = true,
+        cpp = "latest",
+    },
+})
+add_requires("unordered_dense", {
+    system = false,
+    configs = {
+        modules = true,
+        std_import = true,
+    },
+})
+add_requires("tl_function_ref", {
+    system = false,
+    configs = {
+        modules = true,
+        std_import = true,
+    },
+})
+add_requires("luau", {
+    system = false,
+    version = "master",
+    configs = {
         shared = false,
+        extern_c = true,
         build_cli = false,
     },
 })
+add_requires("sol2", {
+    system = false,
+    version = "develop",
+})
+add_requires("volk", { version = "1.4.335" })
+add_requires("vulkan-headers", {
+    version = "1.4.335",
+    system = false,
+    configs = {
+        modules = false,
+    },
+})
+add_requires("vulkan-memory-allocator", {
+    version = "v3.3.0",
+    system = false,
+})
+if is_plat("linux") then
+    add_requires(
+        "libxcb",
+        "xcb-util-keysyms",
+        "xcb-util",
+        "xcb-util-image",
+        "xcb-util-wm",
+        "xcb-util-errors",
+        "wayland",
+        "wayland-protocols",
+        "libxkbcommon"
+    )
+end
 
 add_requires(stormkit_dep_name, {
     configs = {
@@ -84,12 +111,13 @@ add_requires(stormkit_dep_name, {
         entities = true,
         image = true,
         gpu = true,
-        luau = true,
+        lua = true,
 
         examples = false,
         tests = false,
+        tools = false,
 
-        shared = true,
+        -- shared = true,
         debug = is_mode("debug"),
     },
     alias = "stormkit",
@@ -97,26 +125,20 @@ add_requires(stormkit_dep_name, {
 
 if is_mode("debug") or is_mode("reldbg") then add_cxflags("clang::-ggdb3") end
 
--- add_defines("ANKERL_UNORDERED_DENSE_STD_MODULE=1", "FROZEN_STD_MODULE=1")
-target("StormKit-Engine", function()
-    set_kind("$(kind)")
-    set_languages("c++latest")
+namespace("stormkit", function()
+    target("engine", function()
+        set_kind("$(kind)")
+        set_languages("cxxlatest", "clatest")
+        add_rules(stormkit_rule_prefix .. "stormkit::library")
+        set_values("stormkit.components", { "log", "entities", "image", "wsi", "gpu", "lua" })
 
-    add_files("modules/stormkit/**.mpp", { public = true })
-    add_files("src/**.cpp")
-    add_files("src/**.cppm")
+        add_includedirs("include")
 
-    add_packages("stormkit", { components = { "core", "log", "entities", "image", "wsi", "gpu", "luau" } })
-    add_packages(
-        "frozen",
-        "unordered_dense",
-        "tl_function_ref",
-        "volk",
-        "vulkan-headers",
-        "vulkan-memory-allocator",
-        "luau",
-        "luabridge3"
-    )
+        add_files("modules/stormkit/**.cppm", { public = true })
+        add_files("src/**.cpp")
+
+        add_defines("STORMKIT_ENGINE_BUILD", { public = false })
+    end)
+
+    includes("game/xmake.lua")
 end)
-
-includes("game/xmake.lua")

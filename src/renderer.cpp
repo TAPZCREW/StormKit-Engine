@@ -144,6 +144,7 @@ namespace stormkit::engine {
     auto Renderer::thread_loop(std::mutex& framegraph_mutex, std::atomic_bool& rebuild_graph, std::stop_token token) noexcept
       -> void {
         set_current_thread_name("StormKit:RenderThread");
+        // auto logger_singleton = log::Logger::create_logger_instance<log::ConsoleLogger>();
 
         m_command_buffers = TryAssert(m_main_command_pool->create_command_buffers(m_surface->buffering_count()),
                                       "Failed to create main command buffers");
@@ -151,7 +152,7 @@ namespace stormkit::engine {
         for (;;) {
             if (token.stop_requested()) break;
 
-            auto frame = TryAssert(m_surface->begin_frame(*m_device), "Faield to start frame!");
+            auto frame = TryAssert(m_surface->begin_frame(*m_device), "Failed to start frame!");
             TryAssert(do_render(framegraph_mutex, rebuild_graph, frame), "Failed to render frame!");
             TryAssert(m_surface->present_frame(m_raster_queue, frame), "Failed to present frame!");
         }
@@ -195,26 +196,29 @@ namespace stormkit::engine {
 
         if (current_frame->fence().status() == gpu::Fence::Status::SIGNALED) {
             TryAssert(current_frame->fence().wait(), "");
-            current_frame->fence().reset();
+            TryDiscard(current_frame->fence().reset());
         }
         const auto& semaphore = Try(current_frame->execute(m_raster_queue));
 
         auto& backbuffer = current_frame->backbuffer();
-        blit_cmb.transition_image_layout(backbuffer, gpu::ImageLayout::ATTACHMENT_OPTIMAL, gpu::ImageLayout::TRANSFER_SRC_OPTIMAL)
+        // clang-format off
+        blit_cmb
+          .transition_image_layout(backbuffer, gpu::ImageLayout::ATTACHMENT_OPTIMAL, gpu::ImageLayout::TRANSFER_SRC_OPTIMAL)
           .transition_image_layout(present_image, gpu::ImageLayout::PRESENT_SRC, gpu::ImageLayout::TRANSFER_DST_OPTIMAL)
-        .blit_image(backbuffer,
+          .blit_image(backbuffer,
                       present_image,
                       gpu::ImageLayout::TRANSFER_SRC_OPTIMAL,
                       gpu::ImageLayout::TRANSFER_DST_OPTIMAL,
                       std::array {
                         gpu::BlitRegion { .src        = {},
-                                         .dst        = {},
-                                         .src_offset = { math::vec3i { 0, 0, 0 }, backbuffer.extent().to<i32>(), },
-                                         .dst_offset = { math::vec3i { 0, 0, 0 }, present_image.extent().to<i32>(), }, },
-          },
+                                          .dst        = {},
+                                          .src_offset = { math::ivec3 { 0, 0, 0 }, backbuffer.extent().to<i32>(), },
+                                          .dst_offset = { math::ivec3 { 0, 0, 0 }, present_image.extent().to<i32>(), }, },
+                      },
                       gpu::Filter::LINEAR)
           .transition_image_layout(backbuffer, gpu::ImageLayout::TRANSFER_SRC_OPTIMAL, gpu::ImageLayout::ATTACHMENT_OPTIMAL)
-        .transition_image_layout(present_image, gpu::ImageLayout::TRANSFER_DST_OPTIMAL, gpu::ImageLayout::PRESENT_SRC);
+          .transition_image_layout(present_image, gpu::ImageLayout::TRANSFER_DST_OPTIMAL, gpu::ImageLayout::PRESENT_SRC);
+        // clang-format on
 
         Try(blit_cmb.end());
 

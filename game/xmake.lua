@@ -130,30 +130,32 @@ rule("compile.shaders", function()
     end)
 end)
 
-target("Game", function()
+target("game", function()
     set_kind("binary")
-    set_languages("c++latest")
+    set_languages("cxxlatest", "clatest")
 
     add_rules("compile.shaders")
+    add_rules(stormkit_rule_prefix .. "stormkit::application")
+    set_values("stormkit.components", { "log", "entities", "image", "wsi", "gpu", "lua" })
+
+    add_rules("platform.windows.subsystem")
+    set_values("windows.subsystem", "console")
 
     add_files("src/**.cppm")
     add_files("src/**.cpp")
     add_files("shaders/*.nzsl")
 
-    add_syslinks("dl")
+    add_deps("stormkit::engine")
 
-    add_deps("StormKit-Engine")
-    -- add_packages("luau")
-    add_packages("stormkit", { components = { "core", "main", "log", "entities", "image", "wsi", "gpu", "luau" } })
+    on_load(function(target)
+        if get_config("devmode") then
+            import("core.project.config")
+            local shader_dir = path.unix(path.join(config.builddir(), "shaders"))
+            local lua_dir = path.unix(path.join(os.projectdir(), "game", "lua"))
+            target:add("defines", format('SHADER_DIR="%s"', shader_dir))
+            target:add("defines", format('LUA_DIR="%s"', lua_dir))
+        end
+    end)
 
-    if get_config("devmode") then
-        add_defines('SHADER_DIR="$(builddir)/shaders"')
-        add_defines('LUA_DIR="$(projectdir)/game/lua"')
-        set_rundir("$(projectdir)")
-    end
-
-    if get_config("sanitizers") and is_mode("debug", "release", "releasedbg") then
-        set_policy("build.sanitizer.address", true)
-        set_policy("build.sanitizer.undefined", true)
-    end
+    if get_config("devmode") then set_rundir("$(projectdir)") end
 end)

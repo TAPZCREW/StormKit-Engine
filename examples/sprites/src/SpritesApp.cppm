@@ -23,7 +23,7 @@ export class SpritesApp: public App {
 
   private:
     bool               m_fullscreen_enabled = false;
-    math::Extent2<u32> m_window_extent;
+    math::uextent2 m_window_extent;
 
     DeferInit<engine::Application> m_application;
 };

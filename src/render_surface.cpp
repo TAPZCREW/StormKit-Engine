@@ -32,7 +32,7 @@ namespace stormkit::engine {
         m_swapchain = Try(gpu::SwapChain::create(device, m_surface, window.extent(), std::nullopt));
 
         const auto image_count = stdr::size(m_swapchain->images());
-        m_buffering_count      = image_count >= 4 ? 3 : image_count;
+        m_buffering_count      = image_count >= (4 ? 3 : image_count);
 
         for (auto _ : range(m_buffering_count)) {
             m_submission_resources.push_back({
@@ -48,9 +48,9 @@ namespace stormkit::engine {
             auto&& image                     = m_swapchain->images()[i];
             auto&& transition_command_buffer = transition_command_buffers[i];
 
-            transition_command_buffer.begin(true);
+            TryAssert(transition_command_buffer.begin(true), "");
             transition_command_buffer.transition_image_layout(image, gpu::ImageLayout::UNDEFINED, gpu::ImageLayout::PRESENT_SRC);
-            transition_command_buffer.end();
+            TryAssert(transition_command_buffer.end(), "");
         }
 
         auto fence = Try(gpu::Fence::create(device));
@@ -69,8 +69,8 @@ namespace stormkit::engine {
         const auto& render_finished = submission_resources.render_finished;
         auto&       in_flight       = submission_resources.in_flight;
 
-        Try(in_flight.wait());
-        in_flight.reset();
+        TryDiscard(in_flight.wait());
+        TryDiscard(in_flight.reset());
 
         auto&& [_, image_index] = Try(m_swapchain->acquire_next_image(100ms, image_available));
         Return Frame { .current_frame        = as<u32>(m_current_frame),

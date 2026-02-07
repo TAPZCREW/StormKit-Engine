@@ -22,7 +22,7 @@ export module stormkit.engine:ecs.sprite_render_system;
 // export namespace stormkit::engine {
 //     struct PositionComponent: entities::Component {
 //         static constexpr Type TYPE     = "PositionComponent"_component_type;
-//         math::vec2f           position = { 0.f, 0.f };
+//         math::fvec2           position = { 0.f, 0.f };
 //     };
 
 //    struct SpriteComponent: entities::Component {
@@ -32,7 +32,7 @@ export module stormkit.engine:ecs.sprite_render_system;
 
 //    static_assert(core::meta::DerivedFrom<SpriteComponent, entities::Component>);
 
-//    auto make_sprite(entities::EntityManager& world, const gpu::ImageView& texture, const math::vec2f& size) noexcept
+//    auto make_sprite(entities::EntityManager& world, const gpu::ImageView& texture, const math::fvec2& size) noexcept
 //      -> entities::Entity;
 
 //    class SpriteRenderSystem final: public entities::System {
@@ -46,7 +46,7 @@ export module stormkit.engine:ecs.sprite_render_system;
 //    SpriteRenderSystem(SpriteRenderSystem&&) noexcept;
 //    auto operator=(SpriteRenderSystem&&) noexcept -> SpriteRenderSystem&;
 
-//    auto update(Secondf delta) -> void final;
+//    auto update(fsecond delta) -> void final;
 //    auto update_framegraph(FrameGraphBuilder& graph) noexcept -> void;
 
 //    private:
@@ -65,7 +65,7 @@ export module stormkit.engine:ecs.sprite_render_system;
 // namespace stormkit::engine {
 //     //////////////////////////////////////
 //     //////////////////////////////////////
-//     inline auto make_sprite(entities::EntityManager& world, const gpu::ImageView& texture, const math::vec2f& size) noexcept
+//     inline auto make_sprite(entities::EntityManager& world, const gpu::ImageView& texture, const math::fvec2& size) noexcept
 //       -> entities::Entity {
 //         const auto e = world.make_entity();
 
@@ -102,7 +102,7 @@ export module stormkit.engine:ecs.sprite_render_system;
 
 //    //////////////////////////////////////
 //    //////////////////////////////////////
-//    inline auto SpriteRenderSystem::update(Secondf _) -> void {
+//    inline auto SpriteRenderSystem::update(fsecond _) -> void {
 //    }
 
 //    //////////////////////////////////////

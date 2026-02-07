@@ -7,6 +7,8 @@ module;
 #include <stormkit/core/platform_macro.hpp>
 #include <stormkit/core/try_expected.hpp>
 
+#include <stormkit/engine/api.hpp>
+
 export module stormkit.engine:core;
 
 import std;
@@ -14,7 +16,7 @@ import std;
 import stormkit.core;
 import stormkit.gpu;
 import stormkit.wsi;
-import stormkit.luau;
+import stormkit.lua;
 import stormkit.entities;
 
 import :renderer;
@@ -37,7 +39,7 @@ export namespace stormkit::engine {
         return "";
     }
 
-    class STORMKIT_API Application final {
+    class STORMKIT_ENGINE_API Application final {
         struct PrivateTag {};
 
       public:
@@ -57,14 +59,14 @@ export namespace stormkit::engine {
         Application(Application&&) noexcept;
         auto operator=(Application&&) noexcept -> Application&;
 
-        static auto create(std::string_view          application_name,
-                           stdfs::path               main_lua_file,
-                           const math::Extent2<u32>& window_extent,
-                           std::string               window_title = DEFAULT_WINDOW_TITLE) noexcept -> Expected<Application>;
-        static auto allocate(std::string_view          application_name,
-                             stdfs::path               main_lua_file,
-                             const math::Extent2<u32>& window_extent,
-                             std::string window_title = DEFAULT_WINDOW_TITLE) noexcept -> Expected<Heap<Application>>;
+        static auto create(std::string_view      application_name,
+                           stdfs::path           main_lua_file,
+                           const math::uextent2& window_extent,
+                           std::string           window_title = DEFAULT_WINDOW_TITLE) noexcept -> Expected<Application>;
+        static auto allocate(std::string_view      application_name,
+                             stdfs::path           main_lua_file,
+                             const math::uextent2& window_extent,
+                             std::string           window_title = DEFAULT_WINDOW_TITLE) noexcept -> Expected<Heap<Application>>;
 
         auto renderer(this auto& self) noexcept -> decltype(auto);
         auto world(this auto& self) noexcept -> decltype(auto);
@@ -75,17 +77,17 @@ export namespace stormkit::engine {
         auto set_frame_builder(BuildFrameClosure build_frame) noexcept -> void;
 
       private:
-        auto do_init(std::string_view          application_name,
-                     stdfs::path&&             main_lua_file,
-                     const math::Extent2<u32>& window_extent,
-                     std::string&&             window_title) noexcept -> Expected<void>;
+        auto do_init(std::string_view      application_name,
+                     stdfs::path&&         main_lua_file,
+                     const math::uextent2& window_extent,
+                     std::string&&         window_title) noexcept -> Expected<void>;
 
-        ThreadPool              m_thread_pool;
-        DeferInit<wsi::Window>  m_window;
-        DeferInit<luau::Engine> m_lua_engine;
-        DeferInit<Renderer>     m_renderer;
+        ThreadPool                    m_thread_pool;
+        Heap<wsi::Window>             m_window;
+        Heap<Renderer>                m_renderer;
+        Heap<entities::EntityManager> m_world;
 
-        DeferInit<entities::EntityManager> m_world;
+        DeferInit<lua::Engine> m_lua_engine;
 
         BuildFrameClosure m_build_frame = monadic::noop();
     };
@@ -119,10 +121,10 @@ namespace stormkit::engine {
     ////////////////////////////////////////
     ////////////////////////////////////////
     STORMKIT_FORCE_INLINE
-    auto Application::create(std::string_view          application_name,
-                             stdfs::path               main_lua_file,
-                             const math::Extent2<u32>& window_extent,
-                             std::string               window_title) noexcept -> Expected<Application> {
+    auto Application::create(std::string_view      application_name,
+                             stdfs::path           main_lua_file,
+                             const math::uextent2& window_extent,
+                             std::string           window_title) noexcept -> Expected<Application> {
         auto app = Application { PrivateTag {} };
         Try(app.do_init(application_name, std::move(main_lua_file), window_extent, std::move(window_title)));
         Return app;
@@ -131,10 +133,10 @@ namespace stormkit::engine {
     ////////////////////////////////////////
     ////////////////////////////////////////
     STORMKIT_FORCE_INLINE
-    auto Application::allocate(std::string_view          application_name,
-                               stdfs::path               main_lua_file,
-                               const math::Extent2<u32>& window_extent,
-                               std::string               window_title) noexcept -> Expected<Heap<Application>> {
+    auto Application::allocate(std::string_view      application_name,
+                               stdfs::path           main_lua_file,
+                               const math::uextent2& window_extent,
+                               std::string           window_title) noexcept -> Expected<Heap<Application>> {
         auto app = allocate_unsafe<Application>(PrivateTag {});
         Try(app->do_init(application_name, std::move(main_lua_file), window_extent, std::move(window_title)));
         Return app;
@@ -144,21 +146,21 @@ namespace stormkit::engine {
     ////////////////////////////////////////
     STORMKIT_FORCE_INLINE
     auto Application::renderer(this auto& self) noexcept -> decltype(auto) {
-        return std::forward_like<decltype(self)>(self.m_renderer.get());
+        return std::forward_like<decltype(self)>(*self.m_renderer);
     }
 
     ////////////////////////////////////////
     ////////////////////////////////////////
     STORMKIT_FORCE_INLINE
     auto Application::world(this auto& self) noexcept -> decltype(auto) {
-        return std::forward_like<decltype(self)>(self.m_world.get());
+        return std::forward_like<decltype(self)>(*self.m_world);
     }
 
     ////////////////////////////////////////
     ////////////////////////////////////////
     STORMKIT_FORCE_INLINE
     auto Application::window(this auto& self) noexcept -> decltype(auto) {
-        return std::forward_like<decltype(self)>(self.m_window.get());
+        return std::forward_like<decltype(self)>(*self.m_window);
     }
 
     ////////////////////////////////////////

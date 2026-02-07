@@ -9,6 +9,8 @@ module;
 #include <stormkit/core/try_expected.hpp>
 #include <stormkit/log/log_macro.hpp>
 
+#include <stormkit/engine/api.hpp>
+
 export module stormkit.engine:renderer;
 
 import std;
@@ -21,7 +23,7 @@ export import :renderer.framegraph;
 export import :renderer.render_surface;
 
 export namespace stormkit::engine {
-    class STORMKIT_API Renderer final {
+    class STORMKIT_ENGINE_API Renderer final {
         struct PrivateFuncTag {};
 
       public:
@@ -67,7 +69,7 @@ export namespace stormkit::engine {
 
         bool                        m_validation_layers_enabled = false;
         u32                         m_current_frame             = 0;
-        math::Extent2<u32>          m_extent;
+        math::uextent2              m_extent;
         DeferInit<gpu::Instance>    m_instance;
         Heap<gpu::Device>           m_device;
         DeferInit<RenderSurface>    m_surface;

@@ -6,6 +6,8 @@ module;
 
 #include <stormkit/core/platform_macro.hpp>
 
+#include <stormkit/engine/api.hpp>
+
 export module stormkit.engine:renderer.render_surface;
 
 import std;
@@ -17,7 +19,7 @@ import stormkit.wsi;
 export namespace stormkit::engine {
     class Renderer;
 
-    class STORMKIT_API RenderSurface {
+    class STORMKIT_ENGINE_API RenderSurface {
         struct PrivateFuncTag {};
 
       public:

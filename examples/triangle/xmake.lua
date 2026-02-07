@@ -18,7 +18,7 @@ do
     end
 
     add_files("src/*.cpp")
-    add_files("src/*.mpp")
+    add_files("src/*.cppm")
     add_files("shaders/*.nzsl")
     if is_plat("windows") then add_files("win32/*.manifest") end
 
