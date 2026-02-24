@@ -6,57 +6,51 @@ module;
 
 #include <stormkit/core/platform_macro.hpp>
 
+#include <stormkit/engine/api.hpp>
+
 export module stormkit.engine:ecs.sprite_render_system;
 
-// import std;
+import std;
 
-// import stormkit.core;
-// import stormkit.entities;
-// import stormkit.gpu;
+import stormkit;
 
-// import :renderer;
-// import :sprite_renderer;
+import :core;
 
-// using namespace stormkit::entities::literals;
+export namespace stormkit::engine::bidim {
+    struct PositionComponent {
+        math::fvec2 position = { 0.f, 0.f };
 
-// export namespace stormkit::engine {
-//     struct PositionComponent: entities::Component {
-//         static constexpr Type TYPE     = "PositionComponent"_component_type;
-//         math::fvec2           position = { 0.f, 0.f };
-//     };
+        constexpr auto component_name() const noexcept -> std::string_view { return "PositionComponent"; }
 
-//    struct SpriteComponent: entities::Component {
-//        static constexpr Type TYPE = "SpriteComponent"_component_type;
-//        Sprite                sprite;
-//    };
+        constexpr auto type() const noexcept -> entities::ComponentType { return hash(component_name()); }
+    };
 
-//    static_assert(core::meta::DerivedFrom<SpriteComponent, entities::Component>);
+    struct StaticSpriteComponent {
+        TextureID texture_id = INVALID_TEXTURE_ID;
 
-//    auto make_sprite(entities::EntityManager& world, const gpu::ImageView& texture, const math::fvec2& size) noexcept
-//      -> entities::Entity;
+        math::fbounding_rect texture_bounds = {};
 
-//    class SpriteRenderSystem final: public entities::System {
-//      public:
-//        SpriteRenderSystem(const Renderer& renderer, const math::Extent2<f32>& viewport, entities::EntityManager& manager);
-//        ~SpriteRenderSystem() final;
+        constexpr auto component_name() const noexcept -> std::string_view { return "StaticSpriteComponent"; }
 
-//    SpriteRenderSystem(const SpriteRenderSystem&)                    = delete;
-//    auto operator=(const SpriteRenderSystem&) -> SpriteRenderSystem& = delete;
+        constexpr auto type() const noexcept -> entities::ComponentType { return hash(component_name()); }
+    };
 
-//    SpriteRenderSystem(SpriteRenderSystem&&) noexcept;
-//    auto operator=(SpriteRenderSystem&&) noexcept -> SpriteRenderSystem&;
+    class STORMKIT_ENGINE_API SpriteRenderer {
+      public:
+        explicit SpriteRenderer(const Renderer& renderer) noexcept;
+        ~SpriteRenderer() noexcept;
 
-//    auto update(fsecond delta) -> void final;
-//    auto update_framegraph(FrameGraphBuilder& graph) noexcept -> void;
+        SpriteRenderer(const SpriteRenderer&)                    = delete;
+        auto operator=(const SpriteRenderer&) -> SpriteRenderer& = delete;
 
-//    private:
-//      auto on_message_received(const entities::Message& message) -> void final;
+        SpriteRenderer(SpriteRenderer&&) noexcept;
+        auto operator=(SpriteRenderer&&) noexcept -> SpriteRenderer&;
 
-//    SpriteRenderer m_renderer;
+      private:
+    };
 
-//    HashMap<entities::Entity, u32> m_sprite_map;
-// };
-// } // namespace stormkit::engine
+    STORMKIT_ENGINE_API auto init_2d_renderer(Application& application) noexcept -> void;
+} // namespace stormkit::engine::bidim
 
 // /////////////////////////////////////////////////////////////////////
 // ///                      IMPLEMENTATION                          ///

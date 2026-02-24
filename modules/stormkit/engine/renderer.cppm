@@ -22,7 +22,31 @@ import stormkit.gpu;
 export import :renderer.framegraph;
 export import :renderer.render_surface;
 
+namespace stdfs = std::filesystem;
+
 export namespace stormkit::engine {
+    using TextureID = hash32;
+
+    inline constexpr auto INVALID_TEXTURE_ID = std::numeric_limits<TextureID>::max();
+
+    class ResourceStore {
+      public:
+        explicit ResourceStore(const gpu::Device& device) noexcept;
+        ~ResourceStore() noexcept;
+
+        ResourceStore(const ResourceStore&)                    = delete;
+        auto operator=(const ResourceStore&) -> ResourceStore& = delete;
+
+        ResourceStore(ResourceStore&&) noexcept;
+        auto operator=(ResourceStore&&) noexcept -> ResourceStore&;
+
+        auto load_image(const stdfs::path& path) -> TextureID;
+
+      private:
+        Ref<const gpu::Device>         m_device;
+        HashMap<TextureID, gpu::Image> m_textures;
+    };
+
     class STORMKIT_ENGINE_API Renderer final {
         struct PrivateFuncTag {};
 
@@ -30,7 +54,7 @@ export namespace stormkit::engine {
         using BuildFrameClosure = FunctionRef<void(FrameBuilder&)>;
 
         Renderer(ThreadPool& thread_pool, PrivateFuncTag) noexcept;
-        ~Renderer();
+        ~Renderer() noexcept;
 
         Renderer(const Renderer&)                    = delete;
         auto operator=(const Renderer&) -> Renderer& = delete;
@@ -47,13 +71,17 @@ export namespace stormkit::engine {
                              ThreadPool&                    thread_pool,
                              OptionalRef<const wsi::Window> window) noexcept -> gpu::Expected<Heap<Renderer>>;
 
-        auto start_rendering(std::mutex& framegraph_mutex, std::atomic_bool& rebuild_graph) noexcept -> void;
+        auto start_rendering(std::mutex&       framegraph_mutex,
+                             std::atomic_bool& rebuild_graph,
+                             std::atomic_bool& window_is_open) noexcept -> void;
 
         auto instance() const noexcept -> const gpu::Instance&;
         auto device() const noexcept -> const gpu::Device&;
         auto surface() const noexcept -> const RenderSurface&;
         auto raster_queue() const noexcept -> const gpu::Queue&;
         auto main_command_pool() const noexcept -> const gpu::CommandPool&;
+        template<typename Self>
+        auto resources(this Self& self) noexcept -> meta::ForwardConst<Self, ResourceStore>&;
 
         auto render_frame(std::mutex& framegraph_mutex, std::atomic_bool& rebuild_graph, BuildFrameClosure build_frame) noexcept
           -> void;
@@ -64,7 +92,7 @@ export namespace stormkit::engine {
         auto do_init_device() noexcept -> gpu::Expected<void>;
         auto do_init_render_surface(OptionalRef<const wsi::Window>) noexcept -> gpu::Expected<void>;
 
-        auto thread_loop(std::mutex&, std::atomic_bool&, std::stop_token) noexcept -> void;
+        auto thread_loop(std::mutex&, std::atomic_bool&, std::atomic_bool&, std::stop_token) noexcept -> void;
         auto do_render(std::mutex&, std::atomic_bool&, RenderSurface::Frame&) noexcept -> gpu::Expected<void>;
 
         bool                        m_validation_layers_enabled = false;
@@ -75,6 +103,7 @@ export namespace stormkit::engine {
         DeferInit<RenderSurface>    m_surface;
         DeferInit<gpu::Queue>       m_raster_queue;
         DeferInit<gpu::CommandPool> m_main_command_pool;
+        DeferInit<ResourceStore>    m_resource_store;
 
         Ref<ThreadPool> m_thread_pool;
 
@@ -95,7 +124,24 @@ export namespace stormkit::engine {
 ////////////////////////////////////////////////////////////////////
 
 namespace stormkit::engine {
-    LOGGER("Renderer")
+    LOGGER("renderer")
+
+    /////////////////////////////////////
+    /////////////////////////////////////
+    inline ResourceStore::ResourceStore(const gpu::Device& device) noexcept : m_device { as_ref(device) } {
+    }
+
+    /////////////////////////////////////
+    /////////////////////////////////////
+    inline ResourceStore::~ResourceStore() noexcept = default;
+
+    /////////////////////////////////////
+    /////////////////////////////////////
+    inline ResourceStore::ResourceStore(ResourceStore&&) noexcept = default;
+
+    /////////////////////////////////////
+    /////////////////////////////////////
+    inline auto ResourceStore::operator=(ResourceStore&&) noexcept -> ResourceStore& = default;
 
     /////////////////////////////////////
     /////////////////////////////////////
@@ -107,7 +153,9 @@ namespace stormkit::engine {
     /////////////////////////////////////
     /////////////////////////////////////
     STORMKIT_FORCE_INLINE
-    inline Renderer::~Renderer() = default;
+    inline Renderer::~Renderer() noexcept {
+        m_device->wait_idle();
+    }
 
     /////////////////////////////////////
     /////////////////////////////////////
@@ -144,10 +192,14 @@ namespace stormkit::engine {
     /////////////////////////////////////
     /////////////////////////////////////
     STORMKIT_FORCE_INLINE
-    inline auto Renderer::start_rendering(std::mutex& framegraph_mutex, std::atomic_bool& rebuild_graph) noexcept -> void {
-        m_render_thread = std::jthread {
-            bind_front(&Renderer::thread_loop, this, std::ref(framegraph_mutex), std::ref(rebuild_graph))
-        };
+    inline auto Renderer::start_rendering(std::mutex&       framegraph_mutex,
+                                          std::atomic_bool& rebuild_graph,
+                                          std::atomic_bool& window_is_open) noexcept -> void {
+        m_render_thread = std::jthread { bind_front(&Renderer::thread_loop,
+                                                    this,
+                                                    std::ref(framegraph_mutex),
+                                                    std::ref(rebuild_graph),
+                                                    std::ref(window_is_open)) };
         set_thread_name(m_render_thread, "StormKit:RenderThread");
     }
 
@@ -207,5 +259,14 @@ namespace stormkit::engine {
     inline auto Renderer::main_command_pool() const noexcept -> const gpu::CommandPool& {
         EXPECTS(m_main_command_pool.initialized());
         return m_main_command_pool.get();
+    }
+
+    /////////////////////////////////////
+    /////////////////////////////////////
+    template<typename Self>
+    STORMKIT_FORCE_INLINE
+    inline auto Renderer::resources(this Self& self) noexcept -> meta::ForwardConst<Self, ResourceStore>& {
+        EXPECTS(self.m_main_command_pool.initialized());
+        return std::forward_like<Self&>(self.m_resource_store.get());
     }
 } // namespace stormkit::engine

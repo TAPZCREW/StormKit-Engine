@@ -8,9 +8,7 @@ module stormkit.engine;
 
 import std;
 
-import stormkit.core;
-import stormkit.wsi;
-import stormkit.gpu;
+import stormkit;
 
 import :renderer;
 
@@ -32,7 +30,7 @@ namespace stormkit::engine {
         m_swapchain = Try(gpu::SwapChain::create(device, m_surface, window.extent(), std::nullopt));
 
         const auto image_count = stdr::size(m_swapchain->images());
-        m_buffering_count      = image_count >= (4 ? 3 : image_count);
+        m_buffering_count      = (image_count >= 4) ? 3 : as<u32>(image_count);
 
         for (auto _ : range(m_buffering_count)) {
             m_submission_resources.push_back({

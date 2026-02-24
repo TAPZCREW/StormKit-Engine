@@ -38,7 +38,8 @@ end
 local stormkit_dep_name = "stormkit"
 stormkit_rule_prefix = "@stormkit/"
 if has_config("stormkit") then
-    -- includes("xmake/StormKit.xmake.lua")
+    includes("xmake/StormKit.xmake.lua")
+    stormkit_dep_name = "dev_stormkit"
     -- stormkit_rule_prefix = ""
     -- includes(path.join(get_config("stormkit"), "xmake", "rules", "**.lua"))
 end
@@ -74,6 +75,15 @@ add_requires("luau", {
         build_cli = false,
     },
 })
+add_requires("libktx")
+add_requires("libpng")
+add_requires("libjpeg-turbo", is_plat("windows") and {
+    system = false,
+    configs = {
+        runtimes = "MD",
+        shared = true,
+    },
+} or {})
 add_requires("sol2", {
     system = false,
     version = "develop",
@@ -120,15 +130,21 @@ add_requires(stormkit_dep_name, {
         -- shared = true,
         debug = is_mode("debug"),
     },
+    version = "dev",
     alias = "stormkit",
 })
 
 if is_mode("debug") or is_mode("reldbg") then add_cxflags("clang::-ggdb3") end
 
 namespace("stormkit", function()
+    includes("xmake/rules/*.xmake.lua")
+
     target("engine", function()
         set_kind("$(kind)")
         set_languages("cxxlatest", "clatest")
+
+        add_rules("compile.shaders")
+
         add_rules(stormkit_rule_prefix .. "stormkit::library")
         set_values("stormkit.components", { "log", "entities", "image", "wsi", "gpu", "lua" })
 
@@ -136,8 +152,12 @@ namespace("stormkit", function()
 
         add_files("modules/stormkit/**.cppm", { public = true })
         add_files("src/**.cpp")
+        add_files("shaders/**.nzsl")
 
         add_defines("STORMKIT_ENGINE_BUILD", { public = false })
+
+        add_embeddirs("$(builddir)/shaders")
+        add_cxflags("--embed-dir=$(builddir)/shaders")
     end)
 
     includes("game/xmake.lua")

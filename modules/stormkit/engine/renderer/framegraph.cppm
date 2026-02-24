@@ -4,58 +4,19 @@ module;
 #include <stormkit/core/platform_macro.hpp>
 #include <stormkit/core/try_expected.hpp>
 
+#include <stormkit/engine/api.hpp>
+
 export module stormkit.engine:renderer.framegraph;
 
 import std;
 
-import stormkit.core;
-import stormkit.gpu;
+import stormkit;
 
 import :renderer.render_surface;
 
 export namespace stormkit::engine {
     using GraphID                    = dag::VertexID;
     inline constexpr auto INVALID_ID = std::numeric_limits<GraphID>::max();
-
-    struct BufferCreateDescription {
-        std::string name;
-
-        usize size;
-
-        bool cull_imune = false;
-
-        auto operator==(const BufferCreateDescription&) const noexcept -> bool;
-    };
-
-    struct ImageCreateDescription {
-        std::string name;
-
-        math::uextent3      extent;
-        gpu::ImageType      type;
-        gpu::PixelFormat    format;
-        gpu::ImageUsageFlag usages = gpu::ImageUsageFlag::COLOR_ATTACHMENT;
-
-        u32 layers = 1u;
-
-        bool cull_imune = false;
-        auto operator==(const ImageCreateDescription&) const noexcept -> bool;
-    };
-
-    struct ImageReadDescription {
-        GraphID            image;
-        gpu::ImageViewType type;
-        bool               cull_imune = false;
-        auto               operator==(const ImageReadDescription&) const noexcept -> bool;
-    };
-
-    struct ImageWriteDescription {
-        GraphID            image;
-        gpu::ImageViewType type;
-
-        std::optional<gpu::ClearValue> clear_value;
-        bool                           cull_imune = false;
-        auto                           operator==(const ImageWriteDescription&) const noexcept -> bool;
-    };
 
     struct RasterTask {
         gpu::RenderingInfo rendering_info;
@@ -74,6 +35,7 @@ export namespace stormkit::engine {
             template<typename T>
             struct Map {
                 GraphID      id;
+                hash32       name;
                 hash32       hash;
                 Ref<const T> value;
             };
@@ -85,6 +47,15 @@ export namespace stormkit::engine {
             std::vector<Map<gpu::Image>>     image_mapper;
             std::vector<Map<gpu::ImageView>> view_mapper;
             std::vector<Map<gpu::Buffer>>    buffer_mapper;
+
+            [[nodiscard]]
+            auto get_buffer(std::string_view name) noexcept -> const gpu::Buffer&;
+
+            [[nodiscard]]
+            auto get_image(std::string_view name) noexcept -> const gpu::Image&;
+
+            [[nodiscard]]
+            auto get_image_view(std::string_view name) noexcept -> const gpu::ImageView&;
         };
 
         ~Frame() noexcept;
@@ -119,6 +90,32 @@ export namespace stormkit::engine {
         friend class FramePool;
     };
 
+    // struct Attachment {
+    //     struct Resolve {
+    //         Ref<const gpu::ImageView> image_view;
+    //         ResolveModeFlag           mode;
+    //         gpu::ImageLayout          layout = ImageLayout::ATTACHMENT_OPTIMAL;
+    //     };
+
+    //    Ref<const gpu::ImageView> image_view;
+    //    gpu::ImageLayout          layout = ImageLayout::ATTACHMENT_OPTIMAL;
+
+    //    std::optional<Resolve> resolve = std::nullopt;
+
+    //    AttachmentLoadOperation  load_op  = AttachmentLoadOperation::CLEAR;
+    //    AttachmentStoreOperation store_op = AttachmentStoreOperation::STORE;
+
+    //    std::optional<ClearValue> clear_value = std::nullopt;
+    // };
+
+    // math::irect render_area;
+    // u32         layer_count = 1u;
+    // u32         view_mask   = 0u;
+
+    // std::vector<Attachment>   color_attachments;
+    // std::optional<Attachment> depth_attachment   = std::nullopt;
+    // std::optional<Attachment> stencil_attachment = std::nullopt;
+
     class FramePool {
       public:
         FramePool() noexcept;
@@ -131,20 +128,11 @@ export namespace stormkit::engine {
         auto operator=(const FramePool&) noexcept -> FramePool& = delete;
 
         auto recycle_frame(Frame&& frame) noexcept -> void;
-
         auto find_reusable_frame(hash32 hash) noexcept -> std::optional<Frame>;
 
-        auto create_or_reuse_image(const gpu::Device& device, const ImageCreateDescription& description) noexcept
+        auto create_or_reuse_image(const gpu::Device& device, const gpu::Image::CreateInfo& create_info) noexcept
           -> gpu::Expected<gpu::Image>;
-
-        auto create_or_reuse_image_view(const gpu::Device&          device,
-                                        const gpu::Image&           image,
-                                        const ImageReadDescription& description) noexcept -> gpu::Expected<gpu::ImageView>;
-        auto create_or_reuse_image_view(const gpu::Device&           device,
-                                        const gpu::Image&            image,
-                                        const ImageWriteDescription& description) noexcept -> gpu::Expected<gpu::ImageView>;
-
-        auto create_or_reuse_buffer(const gpu::Device& device, const BufferCreateDescription& description) noexcept
+        auto create_or_reuse_buffer(const gpu::Device& device, const gpu::Buffer::CreateInfo& create_info) noexcept
           -> gpu::Expected<gpu::Buffer>;
 
       private:
@@ -162,14 +150,14 @@ export namespace stormkit::engine {
         std::vector<Recycled<gpu::Buffer>> m_reusable_buffers;
     };
 
-    class FrameBuilder {
+    class STORMKIT_ENGINE_API FrameBuilder {
       public:
         class FrameTaskBuilder;
 
         using SetupClosure   = FunctionRef<void(FrameTaskBuilder&)>;
-        using ExecuteClosure = std::function<void(gpu::CommandBuffer&)>;
+        using ExecuteClosure = std::function<void(Frame::FrameResources&, gpu::CommandBuffer&)>;
 
-        struct TaskDescription {
+        struct Task {
             enum class Type {
                 RASTER,
                 COMPUTE,
@@ -182,26 +170,68 @@ export namespace stormkit::engine {
             ExecuteClosure execute;
 
             bool cull_imune = false;
-
-            auto operator==(const TaskDescription&) const noexcept -> bool;
         };
 
-        using GraphEntry = std::
-          variant<BufferCreateDescription, ImageCreateDescription, ImageReadDescription, ImageWriteDescription, TaskDescription>;
+        struct CreateImage {
+            std::string name;
 
-        using DAG = core::DAG<GraphEntry>;
+            gpu::Image::CreateInfo create_info;
+        };
+
+        struct CreateBuffer {
+            std::string name;
+
+            gpu::Buffer::CreateInfo create_info;
+        };
+
+        struct RetainedImage {
+            std::string name;
+
+            Ref<const gpu::Image> image;
+        };
+
+        struct RetainedBuffer {
+            std::string name;
+
+            Ref<const gpu::Buffer> buffer;
+        };
+
+        struct BufferAccess {
+            GraphID id;
+
+            ioffset              offset = 0;
+            std::optional<usize> size;
+        };
+
+        struct ImageAccess {
+            GraphID id;
+        };
+
+        struct AttachmentAccess {
+            GraphID id;
+
+            std::optional<gpu::ClearValue> clear_value;
+        };
+
+        using Node = std::
+          variant<CreateBuffer, CreateImage, RetainedBuffer, RetainedImage, BufferAccess, ImageAccess, AttachmentAccess, Task>;
+        using DAG = core::DAG<Node>;
 
         class FrameTaskBuilder {
           public:
-            auto create_buffer(BufferCreateDescription&& description) noexcept -> GraphID;
-            auto create_image(ImageCreateDescription&& description) noexcept -> GraphID;
+            auto create_buffer(std::string name, gpu::Buffer::CreateInfo create_info, bool cull_imune = false) noexcept
+              -> GraphID;
 
             auto read_buffer(GraphID) noexcept -> void;
-            auto read_image(GraphID, gpu::ImageViewType type) noexcept -> void;
-
             auto write_buffer(GraphID) noexcept -> void;
-            auto write_image(GraphID, gpu::ImageViewType type, std::optional<gpu::ClearValue> clear_value = std::nullopt) noexcept
-              -> void;
+
+            auto create_image(std::string name, gpu::Image::CreateInfo create_info, bool cull_imune = false) noexcept -> GraphID;
+
+            auto read_image(GraphID) noexcept -> void;
+            auto write_image(GraphID) noexcept -> void;
+
+            auto read_attachment(GraphID) noexcept -> void;
+            auto write_attachment(GraphID, std::optional<gpu::ClearValue> clear_value = std::nullopt) noexcept -> void;
 
           private:
             FrameTaskBuilder(GraphID, DAG&) noexcept;
@@ -223,15 +253,21 @@ export namespace stormkit::engine {
 
         auto add_raster_task(std::string name, SetupClosure setup, ExecuteClosure execute, bool imune_to_cull = false) noexcept
           -> GraphID;
-        // auto add_transfer_task(std::string name, SetupClosure setup, ExecuteClosure execute, bool imune_to_cull = false)
-        // noexcept -> GraphID;
-        // auto add_compute_task(std::string name, SetupClosure setup, ExecuteClosure execute, bool
-        // imune_to_cull = false) noexcept -> GraphID;
-        //
+        auto add_transfer_task(std::string name, SetupClosure setup, ExecuteClosure execute, bool imune_to_cull = false) noexcept
+          -> GraphID;
+        auto add_compute_task(std::string name, SetupClosure setup, ExecuteClosure execute, bool imune_to_cull = false) noexcept
+          -> GraphID;
+        auto add_raytracing_task(std::string    name,
+                                 SetupClosure   setup,
+                                 ExecuteClosure execute,
+                                 bool           imune_to_cull = false) noexcept -> GraphID;
+
+        auto retain_buffer(std::string name, const gpu::Buffer& buffer) noexcept -> GraphID;
+        auto retain_image(std::string name, const gpu::Image& image) noexcept -> GraphID;
+
         auto set_backbuffer(GraphID id) noexcept -> void;
 
         auto bake() noexcept -> void;
-
         [[nodiscard]]
         auto baked() const noexcept -> bool;
 
@@ -247,23 +283,17 @@ export namespace stormkit::engine {
 
       private:
         [[nodiscard]]
-        auto add_task(std::string&&, TaskDescription::Type, SetupClosure, ExecuteClosure&&, bool) noexcept -> GraphID;
+        auto add_task(std::string&&, Task::Type, SetupClosure, ExecuteClosure&&, bool) noexcept -> GraphID;
 
         DAG                                 m_dag;
         std::optional<std::vector<GraphID>> m_baked_graph;
+        std::optional<std::vector<GraphID>> m_reversed_baked_graph;
         hash32                              m_hash = 0_u32;
 
         GraphID m_backbuffer = INVALID_ID;
     };
 
-    template<meta::HashType Ret = hash32>
-    constexpr auto hasher(const BufferCreateDescription& description) noexcept -> Ret;
-    template<meta::HashType Ret = hash32>
-    constexpr auto hasher(const ImageCreateDescription& description) noexcept -> Ret;
-    template<meta::HashType Ret = hash32>
-    constexpr auto hasher(const FrameBuilder::TaskDescription& description) noexcept -> Ret;
-    template<meta::HashType Ret = hash32>
-    constexpr auto hasher(const FrameBuilder::GraphEntry& description) noexcept -> Ret;
+    auto operator==(const FrameBuilder::Node& first, const FrameBuilder::Node& second) noexcept -> bool = delete;
 } // namespace stormkit::engine
 
 ////////////////////////////////////////////////////////////////////
@@ -274,6 +304,41 @@ namespace stdr = std::ranges;
 namespace stdv = std::views;
 
 namespace stormkit::engine {
+    /////////////////////////////////////
+    /////////////////////////////////////
+    inline auto Frame::FrameResources::get_buffer(std::string_view name) noexcept -> const gpu::Buffer& {
+        EXPECTS(not stdr::empty(name));
+
+        auto it = stdr::find_if(buffer_mapper, [name = hash(name)](const auto& mapping) noexcept {
+            return mapping.name == name;
+        });
+        ENSURES(it != stdr::cend(buffer_mapper));
+
+        return *it->value;
+    }
+
+    /////////////////////////////////////
+    /////////////////////////////////////
+    inline auto Frame::FrameResources::get_image(std::string_view name) noexcept -> const gpu::Image& {
+        EXPECTS(not stdr::empty(name));
+
+        auto it = stdr::find_if(image_mapper, [name = hash(name)](const auto& mapping) noexcept { return mapping.name == name; });
+        ENSURES(it != stdr::cend(image_mapper));
+
+        return *it->value;
+    }
+
+    /////////////////////////////////////
+    /////////////////////////////////////
+    inline auto Frame::FrameResources::get_image_view(std::string_view name) noexcept -> const gpu::ImageView& {
+        EXPECTS(not stdr::empty(name));
+
+        auto it = stdr::find_if(view_mapper, [name = hash(name)](const auto& mapping) noexcept { return mapping.name == name; });
+        ENSURES(it != stdr::cend(view_mapper));
+
+        return *it->value;
+    }
+
     /////////////////////////////////////
     /////////////////////////////////////
     STORMKIT_FORCE_INLINE
@@ -350,69 +415,27 @@ namespace stormkit::engine {
 
     /////////////////////////////////////
     /////////////////////////////////////
-    inline auto FramePool::create_or_reuse_image(const gpu::Device& device, const ImageCreateDescription& description) noexcept
+    inline auto FramePool::create_or_reuse_image(const gpu::Device& device, const gpu::Image::CreateInfo& create_info) noexcept
       -> gpu::Expected<gpu::Image> {
         update_pool();
-        const auto des_hash = hash(description);
+        const auto des_hash = hash(create_info);
 
         if (auto it = stdr::find_if(m_reusable_images, [des_hash](auto& image) { return image.hash == des_hash; });
             it != stdr::cend(m_reusable_images)) {
             auto image = std::move(it->value);
             m_reusable_images.erase(it);
-            std::println("REUSE IMAGE FOR {}", description.name);
             return image;
         }
 
-        Return Try(gpu::Image::create(device,
-                                      { .extent = description.extent,
-                                        .format = description.format,
-                                        .layers = description.layers,
-                                        .type   = description.type,
-                                        .usages = description.usages }));
+        Return Try(gpu::Image::create(device, create_info));
     }
 
     /////////////////////////////////////
     /////////////////////////////////////
-    inline auto FramePool::create_or_reuse_image_view(const gpu::Device&          device,
-                                                      const gpu::Image&           image,
-                                                      const ImageReadDescription& description) noexcept
-      -> gpu::Expected<gpu::ImageView> {
-        update_pool();
-        const auto aspect_flag = [&image] noexcept {
-            if (is_depth_stencil_format(image.format())) return gpu::ImageAspectFlag::DEPTH | gpu::ImageAspectFlag::STENCIL;
-            else if (gpu::is_depth_format(image.format()))
-                return gpu::ImageAspectFlag::DEPTH;
-
-            return gpu::ImageAspectFlag::COLOR;
-        }();
-
-        Return Try(gpu::ImageView::create(device, image, description.type, { .aspect_mask = aspect_flag }));
-    }
-
-    /////////////////////////////////////
-    /////////////////////////////////////
-    inline auto FramePool::create_or_reuse_image_view(const gpu::Device&           device,
-                                                      const gpu::Image&            image,
-                                                      const ImageWriteDescription& description) noexcept
-      -> gpu::Expected<gpu::ImageView> {
-        update_pool();
-        const auto aspect_flag = [&image] noexcept {
-            if (is_depth_stencil_format(image.format())) return gpu::ImageAspectFlag::DEPTH | gpu::ImageAspectFlag::STENCIL;
-            else if (gpu::is_depth_format(image.format()))
-                return gpu::ImageAspectFlag::DEPTH;
-
-            return gpu::ImageAspectFlag::COLOR;
-        }();
-
-        Return Try(gpu::ImageView::create(device, image, description.type, { .aspect_mask = aspect_flag }));
-    }
-
-    /////////////////////////////////////
-    /////////////////////////////////////
-    inline auto FramePool::create_or_reuse_buffer(const gpu::Device& device, const BufferCreateDescription& description) noexcept
+    inline auto FramePool::create_or_reuse_buffer(const gpu::Device& device, const gpu::Buffer::CreateInfo& create_info) noexcept
       -> gpu::Expected<gpu::Buffer> {
         update_pool();
-        const auto des_hash = hash(description);
+        const auto des_hash = hash(create_info);
 
         if (auto it = stdr::find_if(m_reusable_buffers, [des_hash](auto& buffer) { return buffer.hash == des_hash; });
             it != stdr::cend(m_reusable_buffers)) {
@@ -421,10 +444,7 @@ namespace stormkit::engine {
             return buffer;
         }
 
-        Return Try(gpu::Buffer::create(device,
-                                       {
-                                         .size = description.size,
-                                       }));
+        Return Try(gpu::Buffer::create(device, create_info));
     }
 
     /////////////////////////////////////
@@ -473,80 +493,117 @@ namespace stormkit::engine {
     STORMKIT_FORCE_INLINE
     inline FrameBuilder::FrameTaskBuilder::FrameTaskBuilder(GraphID id, DAG& dag) noexcept
         : m_description_id { id }, m_dag { dag } {
-        EXPECTS(m_dag.has_vertex(id));
     }
 
     /////////////////////////////////////
     /////////////////////////////////////
-    inline auto FrameBuilder::FrameTaskBuilder::create_buffer(BufferCreateDescription&& description) noexcept -> GraphID {
-        const auto id = m_dag.add_vertex(std::move(description));
-
-        m_dag.add_edge(m_description_id, id);
-
-        return id;
+    STORMKIT_FORCE_INLINE
+    inline auto FrameBuilder::FrameTaskBuilder::create_buffer(std::string             name,
+                                                              gpu::Buffer::CreateInfo create_info,
+                                                              bool                    cull_imune) noexcept -> GraphID {
+        return m_dag.add_vertex(CreateBuffer { .name = std::move(name), .create_info = std::move(create_info) });
     }
 
     /////////////////////////////////////
     /////////////////////////////////////
-    inline auto FrameBuilder::FrameTaskBuilder::create_image(ImageCreateDescription&& description) noexcept -> GraphID {
-        const auto id = m_dag.add_vertex(std::move(description));
+    inline auto FrameBuilder::FrameTaskBuilder::read_buffer(GraphID buffer_id) noexcept -> void {
+        EXPECTS(m_dag.has_vertex(buffer_id));
 
-        m_dag.add_edge(m_description_id, id);
+        auto& [_, node] = m_dag.get_vertex_value(buffer_id);
+        ENSURES(is<CreateBuffer>(node) or is<RetainedBuffer>(node));
 
-        return id;
+        const auto buffer_access_id = m_dag.add_vertex(BufferAccess { .id = buffer_id });
+
+        m_dag.add_edge(buffer_id, buffer_access_id);
+        m_dag.add_edge(buffer_access_id, m_description_id);
     }
 
     /////////////////////////////////////
     /////////////////////////////////////
-    inline auto FrameBuilder::FrameTaskBuilder::read_image(GraphID image_id, gpu::ImageViewType type) noexcept -> void {
+    inline auto FrameBuilder::FrameTaskBuilder::write_buffer(GraphID buffer_id) noexcept -> void {
+        EXPECTS(m_dag.has_vertex(buffer_id));
+
+        auto& [_, node] = m_dag.get_vertex_value(buffer_id);
+        ENSURES(is<CreateBuffer>(node) or is<RetainedBuffer>(node));
+
+        const auto buffer_access_id = m_dag.add_vertex(BufferAccess { .id = buffer_id });
+
+        m_dag.add_edge(buffer_id, buffer_access_id);
+        m_dag.add_edge(m_description_id, buffer_access_id);
+    }
+
+    /////////////////////////////////////
+    /////////////////////////////////////
+    STORMKIT_FORCE_INLINE
+    inline auto FrameBuilder::FrameTaskBuilder::create_image(std::string            name,
+                                                             gpu::Image::CreateInfo create_info,
+                                                             bool                   cull_imune) noexcept -> GraphID {
+        return m_dag.add_vertex(CreateImage { .name = std::move(name), .create_info = std::move(create_info) });
+    }
+
+    /////////////////////////////////////
+    /////////////////////////////////////
+    inline auto FrameBuilder::FrameTaskBuilder::read_image(GraphID image_id) noexcept -> void {
         EXPECTS(m_dag.has_vertex(image_id));
 
-        const auto id = m_dag.add_vertex(ImageReadDescription { .image = image_id, .type = type });
+        auto& [_, node] = m_dag.get_vertex_value(image_id);
+        ENSURES(is<CreateImage>(node) or is<RetainedImage>(node));
 
-        m_dag.add_edge(image_id, id);
-        m_dag.add_edge(id, m_description_id);
+        const auto image_access_id = m_dag.add_vertex(ImageAccess { .id = image_id });
+
+        m_dag.add_edge(image_id, image_access_id);
+        m_dag.add_edge(image_access_id, m_description_id);
     }
 
     /////////////////////////////////////
     /////////////////////////////////////
-    inline auto FrameBuilder::FrameTaskBuilder::write_image(GraphID                        image_id,
-                                                            gpu::ImageViewType             type,
-                                                            std::optional<gpu::ClearValue> clear_value) noexcept -> void {
+    inline auto FrameBuilder::FrameTaskBuilder::write_image(GraphID image_id) noexcept -> void {
         EXPECTS(m_dag.has_vertex(image_id));
 
-        const auto& image = as<ImageCreateDescription>(m_dag.get_vertex_value(image_id).value);
+        auto& [_, node] = m_dag.get_vertex_value(image_id);
+        ENSURES(is<CreateImage>(node) or is<RetainedImage>(node));
 
-        const auto id = m_dag.add_vertex(ImageWriteDescription {
-          .image       = image_id,
-          .type        = type,
-          .clear_value = std::move(clear_value),
-          .cull_imune  = image.cull_imune });
+        const auto image_access_id = m_dag.add_vertex(ImageAccess { .id = image_id });
 
-        m_dag.add_edge(image_id, id);
-        m_dag.add_edge(m_description_id, id);
+        m_dag.add_edge(image_id, image_access_id);
+        m_dag.add_edge(m_description_id, image_access_id);
     }
 
     /////////////////////////////////////
     /////////////////////////////////////
-    inline auto FrameBuilder::FrameTaskBuilder::read_buffer(GraphID id) noexcept -> void {
-        EXPECTS(m_dag.has_vertex(id));
+    inline auto FrameBuilder::FrameTaskBuilder::read_attachment(GraphID image_id) noexcept -> void {
+        EXPECTS(m_dag.has_vertex(image_id));
 
-        m_dag.add_edge(id, m_description_id);
+        auto& [_, node] = m_dag.get_vertex_value(image_id);
+        ENSURES(is<CreateImage>(node) or is<RetainedImage>(node));
+
+        const auto attachment_id = m_dag.add_vertex(AttachmentAccess { .id = image_id });
+
+        m_dag.add_edge(image_id, attachment_id);
+        m_dag.add_edge(attachment_id, m_description_id);
     }
 
     /////////////////////////////////////
     /////////////////////////////////////
-    inline auto FrameBuilder::FrameTaskBuilder::write_buffer(GraphID id) noexcept -> void {
-        EXPECTS(m_dag.has_vertex(id));
+    inline auto FrameBuilder::FrameTaskBuilder::write_attachment(GraphID                        image_id,
+                                                                 std::optional<gpu::ClearValue> clear_value) noexcept -> void {
+        EXPECTS(m_dag.has_vertex(image_id));
 
-        m_dag.add_edge(m_description_id, id);
+        auto& [_, node] = m_dag.get_vertex_value(image_id);
+        ENSURES(is<CreateImage>(node) or is<RetainedImage>(node));
+
+        const auto attachment_id = m_dag.add_vertex(AttachmentAccess { .id = image_id });
+
+        m_dag.add_edge(image_id, attachment_id);
+        m_dag.add_edge(m_description_id, attachment_id);
     }
 
     /////////////////////////////////////
     /////////////////////////////////////
     STORMKIT_FORCE_INLINE
     inline FrameBuilder::FrameBuilder() noexcept
-        : m_dag { dag::DIRECTED } {};
+        : m_dag {} {
+    }
 
     /////////////////////////////////////
     /////////////////////////////////////
@@ -570,28 +627,52 @@ namespace stormkit::engine {
                                               FrameBuilder::SetupClosure   setup,
                                               FrameBuilder::ExecuteClosure execute,
                                               bool                         imune_to_cull) noexcept -> GraphID {
-        return add_task(std::move(name), TaskDescription::Type::RASTER, std::move(setup), std::move(execute), imune_to_cull);
+        return add_task(std::move(name), Task::Type::RASTER, std::move(setup), std::move(execute), imune_to_cull);
     }
 
-    // /////////////////////////////////////
-    // /////////////////////////////////////
-    // STORMKIT_FORCE_INLINE
-    // inline auto FrameBuilder::add_transfer_task(std::string                     name,
-    //                                                FrameBuilder::SetupClosure   setup,
-    //                                                FrameBuilder::ExecuteClosure execute,
-    //                                                bool                            imune_to_cull) noexcept -> GraphID {
-    //     return add_task(std::move(name), TaskDescription::Type::TRANSFER, std::move(setup), std::move(execute), imune_to_cull);
-    // }
+    /////////////////////////////////////
+    /////////////////////////////////////
+    STORMKIT_FORCE_INLINE
+    inline auto FrameBuilder::add_transfer_task(std::string                  name,
+                                                FrameBuilder::SetupClosure   setup,
+                                                FrameBuilder::ExecuteClosure execute,
+                                                bool                         imune_to_cull) noexcept -> GraphID {
+        return add_task(std::move(name), Task::Type::TRANSFER, std::move(setup), std::move(execute), imune_to_cull);
+    }
 
-    // /////////////////////////////////////
-    // /////////////////////////////////////
-    // STORMKIT_FORCE_INLINE
-    // inline auto FrameBuilder::add_compute_task(std::string                     name,
-    //                                               FrameBuilder::SetupClosure   setup,
-    //                                               FrameBuilder::ExecuteClosure execute,
-    //                                               bool                            imune_to_cull) noexcept -> GraphID {
-    //     return add_task(std::move(name), TaskDescription::Type::COMPUTE, std::move(setup), std::move(execute), imune_to_cull);
-    // }
+    /////////////////////////////////////
+    /////////////////////////////////////
+    STORMKIT_FORCE_INLINE
+    inline auto FrameBuilder::add_compute_task(std::string                  name,
+                                               FrameBuilder::SetupClosure   setup,
+                                               FrameBuilder::ExecuteClosure execute,
+                                               bool                         imune_to_cull) noexcept -> GraphID {
+        return add_task(std::move(name), Task::Type::COMPUTE, std::move(setup), std::move(execute), imune_to_cull);
+    }
+
+    /////////////////////////////////////
+    /////////////////////////////////////
+    STORMKIT_FORCE_INLINE
+    inline auto FrameBuilder::add_raytracing_task(std::string                  name,
+                                                  FrameBuilder::SetupClosure   setup,
+                                                  FrameBuilder::ExecuteClosure execute,
+                                                  bool                         imune_to_cull) noexcept -> GraphID {
+        return add_task(std::move(name), Task::Type::RAYTRACING, std::move(setup), std::move(execute), imune_to_cull);
+    }
+
+    /////////////////////////////////////
+    /////////////////////////////////////
+    STORMKIT_FORCE_INLINE
+    inline auto FrameBuilder::retain_image(std::string name, const gpu::Image& image) noexcept -> GraphID {
+        return m_dag.add_vertex(RetainedImage { .name = std::move(name), .image = as_ref(image) });
+    }
+
+    /////////////////////////////////////
+    /////////////////////////////////////
+    STORMKIT_FORCE_INLINE
+    inline auto FrameBuilder::retain_buffer(std::string name, const gpu::Buffer& buffer) noexcept -> GraphID {
+        return m_dag.add_vertex(RetainedBuffer { .name = std::move(name), .buffer = as_ref(buffer) });
+    }
 
     /////////////////////////////////////
     /////////////////////////////////////
@@ -610,6 +691,7 @@ namespace stormkit::engine {
 
     /////////////////////////////////////
     /////////////////////////////////////
+    STORMKIT_FORCE_INLINE
     inline auto FrameBuilder::hash() const noexcept -> hash32 {
         EXPECTS(baked());
 
@@ -618,12 +700,13 @@ namespace stormkit::engine {
 
     /////////////////////////////////////
     /////////////////////////////////////
+    STORMKIT_FORCE_INLINE
     inline auto FrameBuilder::add_task(std::string&&                  name,
-                                       TaskDescription::Type          type,
+                                       Task::Type                     type,
                                        FrameBuilder::SetupClosure     setup,
                                        FrameBuilder::ExecuteClosure&& execute,
                                        bool                           imune_to_cull) noexcept -> GraphID {
-        const auto id = m_dag.add_vertex(TaskDescription {
+        const auto id = m_dag.add_vertex(Task {
           .type       = type,
           .name       = std::move(name),
           .execute    = std::move(execute),
@@ -637,125 +720,11 @@ namespace stormkit::engine {
 
     /////////////////////////////////////
     /////////////////////////////////////
-    template<meta::HashType Ret = hash32>
-    constexpr auto hasher(const BufferCreateDescription& description) noexcept -> Ret {
-        auto hash = Ret { 0 };
+    // STORMKIT_FORCE_INLINE
+    // inline auto operator==(const FrameBuilder::Task& first, const FrameBuilder::Task& second) noexcept -> bool {
+    //     const auto& first_name  = std::visit([](const auto& description) static noexcept { return description.name; }, first);
+    //     const auto& second_name = std::visit([](const auto& description) static noexcept { return description.name; }, second);
 
-        hash_combine(hash, description.name, description.size, description.cull_imune);
-
-        return hash;
-    }
-
-    /////////////////////////////////////
-    /////////////////////////////////////
-    template<meta::HashType Ret = hash32>
-    constexpr auto hasher(const ImageCreateDescription& description) noexcept -> Ret {
-        auto hash = Ret { 0 };
-
-        hash_combine(hash,
-                     description.name,
-                     description.extent,
-                     description.type,
-                     description.format,
-                     description.layers,
-                     description.cull_imune);
-
-        return hash;
-    }
-
-    /////////////////////////////////////
-    /////////////////////////////////////
-    template<meta::HashType Ret = hash32>
-    constexpr auto hasher(const FrameBuilder::TaskDescription& description) noexcept -> Ret {
-        auto hash = Ret { 0 };
-
-        hash_combine(hash, description.name, description.type, description.cull_imune);
-
-        return hash;
-    }
-
-    /////////////////////////////////////
-    /////////////////////////////////////
-    template<meta::HashType Ret = hash32>
-    constexpr auto hasher(const FrameBuilder::GraphEntry& description) noexcept -> Ret {
-        return std::visit(Overloaded {
-                            [](const BufferCreateDescription& value) static noexcept { return hash(value); },
-                            [](const ImageCreateDescription& value) static noexcept { return hash(value); },
-                            [](const ImageReadDescription&) static noexcept { return 0_u32; },
-                            [](const ImageWriteDescription&) static noexcept { return 0_u32; },
-                            [](const FrameBuilder::TaskDescription& value) static noexcept { return hash(value); },
-                          },
-                          description);
-    }
-
-    /////////////////////////////////////
-    /////////////////////////////////////
-    STORMKIT_FORCE_INLINE
-    inline auto BufferCreateDescription::operator==(const BufferCreateDescription& other) const noexcept -> bool {
-        if (name != other.name) return false;
-        else if (size != other.size)
-            return false;
-        else if (cull_imune != other.cull_imune)
-            return false;
-
-        return true;
-    }
-
-    /////////////////////////////////////
-    /////////////////////////////////////
-    STORMKIT_FORCE_INLINE
-    inline auto ImageCreateDescription::operator==(const ImageCreateDescription& other) const noexcept -> bool {
-        if (name != other.name) return false;
-        else if (extent != other.extent)
-            return false;
-        else if (type != other.type)
-            return false;
-        else if (format != other.format)
-            return false;
-        else if (usages != other.usages)
-            return false;
-        else if (layers != other.layers)
-            return false;
-        else if (cull_imune != other.cull_imune)
-            return false;
-        return true;
-    }
-
-    /////////////////////////////////////
-    /////////////////////////////////////
-    STORMKIT_FORCE_INLINE
-    inline auto ImageReadDescription::operator==(const ImageReadDescription& other) const noexcept -> bool {
-        if (image != other.image) return false;
-        else if (type != other.type)
-            return false;
-        else if (cull_imune != other.cull_imune)
-            return false;
-        return true;
-    }
-
-    /////////////////////////////////////
-    /////////////////////////////////////
-    STORMKIT_FORCE_INLINE
-    inline auto ImageWriteDescription::operator==(const ImageWriteDescription& other) const noexcept -> bool {
-        if (image != other.image) return false;
-        else if (type != other.type)
-            return false;
-        else if (clear_value != other.clear_value)
-            return false;
-        else if (cull_imune != other.cull_imune)
-            return false;
-        return true;
-    }
-
-    /////////////////////////////////////
-    /////////////////////////////////////
-    STORMKIT_FORCE_INLINE
-    inline auto FrameBuilder::TaskDescription::operator==(const FrameBuilder::TaskDescription& other) const noexcept -> bool {
-        if (name != other.name) return false;
-        // else if (execute != other.execute)
-        //     return false;
-        else if (cull_imune != other.cull_imune)
-            return false;
-        return true;
-    }
+    //    return first_name == second_name;
+    // }
 } // namespace stormkit::engine

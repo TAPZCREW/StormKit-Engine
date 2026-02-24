@@ -4,110 +4,130 @@ module;
 #include <stormkit/core/platform_macro.hpp>
 #include <stormkit/core/try_expected.hpp>
 
+#define DEBUG_DAG
+
 module stormkit.engine;
 
 import std;
 
-import stormkit.core;
-import stormkit.gpu;
+import stormkit;
 
 import :renderer.framegraph;
 
 namespace stormkit::engine {
+#ifdef DEBUG_DAG
     namespace {
         constexpr auto colorize_overloaded = Overloaded {
-            [](const BufferCreateDescription& value) static noexcept { return "blue"; },
-            [](const ImageCreateDescription& value) static noexcept { return "red"; },
-            [](const ImageReadDescription& value) static noexcept { return "pink"; },
-            [](const ImageWriteDescription& value) static noexcept { return "orange"; },
-            [](const FrameBuilder::TaskDescription& value) static noexcept { return "white"; },
+            [](const FrameBuilder::RetainedBuffer&) static noexcept { return "cyan"; },
+            [](const FrameBuilder::RetainedImage&) static noexcept { return "orange"; },
+            [](const FrameBuilder::CreateBuffer&) static noexcept { return "green"; },
+            [](const FrameBuilder::CreateImage&) static noexcept { return "maroon"; },
+            [](const FrameBuilder::BufferAccess&) static noexcept { return "pink"; },
+            [](const FrameBuilder::ImageAccess&) static noexcept { return "red"; },
+            [](const FrameBuilder::AttachmentAccess&) static noexcept { return "blue"; },
+            [](const FrameBuilder::Task&) static noexcept { return "white"; },
         };
 
         constexpr auto colorize_visitor = [](const auto& value) static noexcept {
             return std::visit(colorize_overloaded, value);
         };
 
-        constexpr auto make_format_visitor(auto& dag) noexcept {
-            return Overloaded {
-                [](const BufferCreateDescription& value) static noexcept { return value.name; },
-                [](const ImageCreateDescription& value) static noexcept { return value.name; },
-                [&dag](const ImageReadDescription& value) noexcept {
-                    return std::format("{}:read", as<ImageCreateDescription>(dag.get_vertex_value(value.image).value).name);
-                },
-                [&dag](const ImageWriteDescription& value) noexcept {
-                    return std::format("{}:write", as<ImageCreateDescription>(dag.get_vertex_value(value.image).value).name);
-                },
-                [](const FrameBuilder::TaskDescription& value) static noexcept { return value.name; },
-            };
+        constexpr auto colorize_visitor_reversed = [](const auto& value) static noexcept {
+            return std::visit(colorize_overloaded, *value);
+        };
+
+        constexpr auto format_overloaded = Overloaded {
+            [](const FrameBuilder::BufferAccess& access) static noexcept {
+                return std::format("buffer access id: {}", access.id);
+            },
+            [](const FrameBuilder::ImageAccess& access) static noexcept { return std::format("image access id: {}", access.id); },
+            [](const FrameBuilder::AttachmentAccess& access) static noexcept {
+                return std::format("attachment access id: {}", access.id);
+            },
+            [](const auto& description) static noexcept { return std::format("{}", description.name); },
+        };
+
+        constexpr auto format_visitor = [](const auto& value) static noexcept { return std::visit(format_overloaded, value); };
+
+        constexpr auto format_visitor_reversed = [](const auto& value) static noexcept {
+            return std::visit(format_overloaded, *value);
+        };
+
+        auto print_dag(auto& dag, stdfs::path path = "./frame.dot") noexcept {
+            TryAssert(io::write_text(std::move(path), dag.dump({ .colorize = colorize_visitor, .format_value = format_visitor })),
+                      "Failed to write frame.dot");
         }
 
-        auto print_dag(auto& dag) noexcept {
-            std::println("{}", dag.dump({ .colorize = colorize_visitor, .format_value = [&dag](const auto& value) noexcept {
-                                             return std::visit(make_format_visitor(dag), value);
-                                         } }));
+        auto print_dag_reversed(auto& dag) noexcept {
+            TryAssert(io::write_text("./frame_reversed.dot",
+                                     dag
+                                       .dump({ .colorize = colorize_visitor_reversed, .format_value = format_visitor_reversed })),
+                      "Failed to write frame_reversed.dot");
         }
     } // namespace
+#endif
 
     /////////////////////////////////////
     /////////////////////////////////////
     auto FrameBuilder::bake() noexcept -> void {
         EXPECTS(m_backbuffer != INVALID_ID);
-        // print_dag(m_dag);
-        // cull unused nodes
-        const auto reversed    = m_dag.reverse();
-        auto       cull_imunes = reversed.vertices() | stdv::filter([](const auto& variant) static noexcept {
-                               return std::visit([](const auto& value) static noexcept { return value.cull_imune; },
-                                                 *variant.value);
-                                 });
+#ifdef DEBUG_DAG
+        print_dag(m_dag);
+#endif
 
-        auto queue = std::queue<GraphID> {};
-        for (auto&& [id, _] : cull_imunes) queue.push(id);
+        //    const auto reversed = m_dag.reverse_view();
+        // #ifdef DEBUG_DAG
+        //    print_dag_reversed(reversed);
+        // #endif
 
-        auto visited = std::vector<GraphID> {};
-        visited.reserve(stdr::size(m_dag.vertices()));
+        //    auto queue = std::queue<GraphID> {};
+        //    queue.push(m_backbuffer);
+        //    // for (auto&& [id, _] : cull_imunes) queue.push(id);
 
-        while (not queue.empty()) {
-            const auto id = queue.front();
-            queue.pop();
+        //    auto visited = std::vector<GraphID> {};
+        //    visited.reserve(stdr::size(m_dag.vertices()));
 
-            visited.emplace_back(id);
+        //    while (not queue.empty()) {
+        //        const auto id = queue.front();
+        //        queue.pop();
 
-            const auto childs = reversed.adjacent_edges(id);
-            for (auto [from, to] : childs) queue.push(to);
-        }
+        //    if (stdr::contains(visited, id)) {
+        //        std::println("already visited {}", id);
+        //        continue;
+        //    }
 
-        for (auto&& [id, description] : reversed.vertices())
-            if (not stdr::contains(visited, id)) m_dag.remove_vertex(id);
+        //    std::println("visit {}", id);
+        //    visited.emplace_back(id);
+
+        //    const auto childs = reversed.adjacent_edges(id);
+        //    for (auto [from, to] : childs) {
+        //        std::println("queue {}", to);
+        //        queue.push(to);
+        //    }
+        // }
+
+        //    for (auto&& [id, description] : reversed.vertices()) {
+        //        const auto cull_imune = std::visit([](const auto& value) static noexcept { return value.cull_imune; },
+        //        *description); if (not stdr::contains(visited, id) and not cull_imune) {
+        //            std::println("remove {}", id);
+        //            m_dag.remove_vertex(id);
+        //        }
+        //    }
 
         m_baked_graph = TryAssert(m_dag.topological_sort(), "Cycle detected!");
-        // print_dag(m_dag);
-
-        m_hash = 0u;
-        for (auto&& id : *m_baked_graph) hash_combine(m_hash, m_dag.get_vertex_value(id).value);
-    } // namespace
-
-    template<typename T>
-    struct DAGResource {
-        GraphID      id;
-        Ref<const T> description;
-    };
+        // m_reversed_baked_graph = TryAssert(m_reversed_dag.reverse_view().topological_sort(), "Cycle detected!");
+#ifdef DEBUG_DAG
+        print_dag(m_dag, "./frame_culled.dot");
+#endif
+    }
 
     struct Pass {
-        GraphID                                  id;
-        Ref<const FrameBuilder::TaskDescription> description;
+        GraphID id;
 
-        std::vector<DAGResource<ImageCreateDescription>> image_creates = {};
-        std::vector<DAGResource<ImageReadDescription>>   image_reads   = {};
-        std::vector<DAGResource<ImageWriteDescription>>  image_writes  = {};
-
-        std::vector<DAGResource<BufferCreateDescription>> buffer_creates = {};
-        // std::vector<DAGResource<BufferReadDescription>>        buffer_read   = {};
-        // std::vector<DAGResource<BufferWriteDescription>>        buffer_write  = {};
+        std::vector<GraphID> attachments;
     };
 
-    struct FrameDescription {
-        std::vector<Pass> passes;
-    };
+    struct Attachments {};
 
     /////////////////////////////////////
     /////////////////////////////////////
@@ -119,150 +139,202 @@ namespace stormkit::engine {
         EXPECTS(m_backbuffer != INVALID_ID);
         EXPECTS(baked());
 
-        auto frame_description = FrameDescription {};
-        for (auto&& id : *m_baked_graph) {
-            const auto& [_, description_variant] = m_dag.get_vertex_value(id);
-
-            if (std::holds_alternative<TaskDescription>(description_variant)) {
-                const auto& task_description = std::get<TaskDescription>(description_variant);
-
-                auto& pass = frame_description.passes.emplace_back(Pass { .id = id, .description = as_ref(task_description) });
-                for (auto&& [_, to] : m_dag.adjacent_edges(id)) {
-                    const auto& [_, res_description_variant] = m_dag.get_vertex_value(to);
-                    std::visit(Overloaded {
-                                 [&pass, to](const BufferCreateDescription& buffer_description) mutable noexcept {
-                                     pass.buffer_creates.emplace_back(to, as_ref(buffer_description));
-                                 },
-                                 // [&pass, to](const BufferReadDescription& buffer_description) mutable noexcept {
-                                 //     pass.buffer_reads.emplace_back(to, as_ref(buffer_description));
-                                 // },
-                                 // [&pass, to](const BufferWriteDescription& buffer_description) mutable noexcept {
-                                 //     pass.buffer_writes.emplace_back(to, as_ref(buffer_description));
-                                 // },
-                                 [&pass, to](const ImageCreateDescription& image_description) mutable noexcept {
-                                     pass.image_creates.emplace_back(to, as_ref(image_description));
-                                 },
-                                 [&pass, to](const ImageReadDescription& image_description) mutable noexcept {
-                                     pass.image_reads.emplace_back(to, as_ref(image_description));
-                                 },
-                                 [&pass, to](const ImageWriteDescription& image_description) mutable noexcept {
-                                     pass.image_writes.emplace_back(to, as_ref(image_description));
-                                 },
-                                 [](const auto&) static noexcept {},
-                               },
-                               res_description_variant);
-                }
-            }
-        }
-
         auto frame        = Frame {};
         frame.m_cmb       = Try(command_pool.create_command_buffer());
         frame.m_fence     = Try(gpu::Fence::create(device));
         frame.m_semaphore = Try(gpu::Semaphore::create(device));
-        auto& resources   = frame.m_resources;
-        auto& cmb         = *frame.m_cmb;
-        auto& fence       = *frame.m_fence;
-        auto& semaphore   = *frame.m_semaphore;
+
+        auto& resources                                                          = frame.m_resources;
+        auto& [images, views, buffers, image_mapper, view_mapper, buffer_mapper] = resources;
 
         auto transition_cmb   = Try(command_pool.create_command_buffer());
         auto transition_fence = Try(gpu::Fence::create(device));
 
-        Try(cmb.begin());
-        Try(transition_cmb.begin(true));
-        for (const auto& pass : frame_description.passes) {
-            const auto& task = pass.description;
-            cmb.begin_debug_region(std::format("Task:{}", task->name));
+        for (const auto id : *m_baked_graph) {
+            const auto& [_, node] = m_dag.get_vertex_value(id);
 
-            // create written resources first
-            // reserved so pointers are stables
-            auto& images       = resources.images;
-            auto& image_mapper = resources.image_mapper;
-            images.reserve(stdr::size(pass.image_creates));
-            image_mapper.reserve(stdr::size(pass.image_creates));
-            for (const auto& [id, image_description] : pass.image_creates) {
-                const auto is_depth = gpu::is_depth_format(image_description->format)
-                                      or gpu::is_depth_stencil_format(image_description->format);
-
-                const auto usage = [&] noexcept {
-                    auto out = (is_depth) ? gpu::ImageUsageFlag::DEPTH_STENCIL_ATTACHMENT : gpu::ImageUsageFlag::COLOR_ATTACHMENT;
-
-                    if (id == m_backbuffer) out |= gpu::ImageUsageFlag::TRANSFER_SRC;
-
-                    return out;
-                }();
-
-                auto& frame_image = images.emplace_back(Try(frame_pool.create_or_reuse_image(device, image_description)));
-                image_mapper.emplace_back(id, hasher<hash32>(*image_description), as_ref(frame_image));
-                transition_cmb.begin_debug_region(std::format("Transition:{}", image_description->name))
-                  .transition_image_layout(frame_image, gpu::ImageLayout::UNDEFINED, gpu::ImageLayout::ATTACHMENT_OPTIMAL)
-                  .end_debug_region();
-
-                if (not frame.m_backbuffer and id == m_backbuffer) frame.m_backbuffer = as_opt_ref(frame_image);
+            if (is<CreateImage>(node)) {
+                const auto  create_image = as<CreateImage>(node);
+                const auto& image = images.emplace_back(Try(frame_pool.create_or_reuse_image(device, create_image.create_info)));
+                image_mapper.emplace_back(id, core::hash(create_image.name), core::hash(create_image.create_info), as_ref(image));
+            } else if (is<RetainedImage>(node)) {
+                const auto retained_image = as<CreateImage>(node);
+                image_mapper.emplace_back(id, core::hash(retained_image.name), 0u, as_ref(retained_image.image));
+            } else if (is<CreateBuffer>(node)) {
+                const auto  create_buffer = as<CreateBuffer>(node);
+                const auto& buffer = buffers
+                                       .emplace_back(Try(frame_pool.create_or_reuse_buffer(device, create_buffer.create_info)));
+                buffer_mapper
+                  .emplace_back(id, core::hash(create_buffer.name), core::hash(create_buffer.create_info), as_ref(buffer));
+            } else if (is<RetainedBuffer>(node)) {
+                const auto retained_buffer = as<CreateBuffer>(node);
+                buffer_mapper.emplace_back(id, core::hash(retained_buffer.name), 0, as_ref(retained_buffer.buffer));
             }
-
-            auto color_attachments = std::vector<gpu::RenderingInfo::Attachment> {};
-            color_attachments.reserve(stdr::size(resources.images));
-            auto depth_attachment   = std::optional<gpu::RenderingInfo::Attachment> {};
-            auto stencil_attachment = std::optional<gpu::RenderingInfo::Attachment> {};
-            auto i                  = 0u;
-
-            // reserved so pointers are stables
-            auto& views = resources.views;
-            views.reserve(stdr::size(pass.image_writes) + stdr::size(pass.image_reads));
-            for (const auto& [id, view_description] : pass.image_writes) {
-                const auto& it = stdr::find_if(image_mapper, [id = view_description->image](const auto& image) noexcept {
-                    return image.id == id;
-                });
-                ENSURES(it != stdr::cend(image_mapper));
-                const auto& image = *it->value;
-
-                auto& view = views.emplace_back(Try(frame_pool.create_or_reuse_image_view(device, image, view_description)));
-
-                auto attachment = gpu::RenderingInfo::Attachment { .image_view  = as_ref(view),
-                                                                   .clear_value = view_description->clear_value };
-
-                if (gpu::is_depth_format(image.format())) depth_attachment = std::move(attachment);
-                else
-                    color_attachments.emplace_back(std::move(attachment));
-                ++i;
-            }
-
-            auto& buffers       = resources.buffers;
-            auto& buffer_mapper = resources.buffer_mapper;
-            buffers.reserve(stdr::size(pass.buffer_creates));
-            buffer_mapper.reserve(stdr::size(pass.buffer_creates));
-
-            switch (task->type) {
-                case TaskDescription::Type::RASTER: {
-                    auto raster_task = RasterTask {
-                        .rendering_info = gpu::RenderingInfo { .render_area        = render_area,
-                                                              .color_attachments  = std::move(color_attachments),
-                                                              .depth_attachment   = std::move(depth_attachment),
-                                                              .stencil_attachment = std::move(stencil_attachment) },
-                        .cmb            = Try(command_pool.create_command_buffer(gpu::CommandBufferLevel::SECONDARY))
-                    };
-                    cmb.begin_rendering(raster_task.rendering_info);
-
-                    task->execute(cmb);
-
-                    cmb.end_rendering();
-                } break;
-                case TaskDescription::Type::COMPUTE: {
-                } break;
-                case TaskDescription::Type::TRANSFER: {
-                } break;
-                case TaskDescription::Type::RAYTRACING: {
-                } break;
-            }
-            cmb.end_debug_region();
         }
 
-        Try(cmb.end());
-        Try(transition_cmb.end());
+        Try(transition_cmb.begin(true));
+        // Try(std::visit(
+        //   Overloaded {
+        //     [&buffers, &buffer_mapper, &frame_pool, id, &device](const FrameBuffer& description) mutable noexcept
+        //       -> gpu::Expected<void> {
+        //         const auto& buffer = buffers
+        //                                .emplace_back(Try(frame_pool.create_or_reuse_buffer(device,
+        //                                description.create_info)));
+        //         buffer_mapper.emplace_back(id, hash(description.name), core::hash(description.create_info),
+        //         as_ref(buffer)); Return {};
+        //     },
+        //     [&buffer_mapper, id](const RetainedBuffer& description) mutable noexcept -> gpu::Expected<void> {
+        //         buffer_mapper.emplace_back(id, hash(description.name), 0_u32, description.buffer);
 
-        TryDiscard(transition_cmb.submit(queue, {}, {}, {}, as_ref(transition_fence)));
-        TryDiscard(transition_fence.wait());
+        //    return {};
+        // },
+        // [&images,
+        // &image_mapper,
+        // &frame_pool,
+        // id,
+        // &device,
+        // &transition_cmb](const FrameImage& description) mutable noexcept -> gpu::Expected<void> {
+        //    const auto& image = images
+        //                          .emplace_back(Try(frame_pool.create_or_reuse_image(device, description.create_info)));
+        //    image_mapper.emplace_back(id, hash(description.name), core::hash(description.create_info), as_ref(image));
 
-        return frame;
+        //    Return {};
+        // },
+        // [&image_mapper, id](const RetainedImage& description) mutable noexcept -> gpu::Expected<void> {
+        //    image_mapper.emplace_back(id, hash(description.name), 0_u32, description.image);
+        //    return {};
+        // },
+        // [&images, &image_mapper, id, &device, &transition_cmb](const AttachmentDescription&) mutable noexcept
+        //  -> gpu::Expected<void> {
+        //    const auto& view = views.emplace_back(Try(gpu::ImageView::create(device, description.create_info)));
+        //    views_mapper.emplace_back(id, hash(description.name), 0_u32, as_ref(view));
+
+        //    transition_cmb.begin_debug_region(std::format("Transition:{}", description.name))
+        //      .transition_image_layout(image, gpu::ImageLayout::UNDEFINED, gpu::ImageLayout::ATTACHMENT_OPTIMAL)
+        //      .end_debug_region();
+        // },
+        // [](const auto&) static noexcept -> gpu::Expected<void> { return {}; },
+        // },
+        // node));
     }
+
+    Try(transition_cmb.end());
+    TryDiscard(transition_cmb.submit(queue, {}, {}, {}, as_ref(transition_fence)));
+
+    // prepare attachments
+    // auto passes = std::vector<Pass> {};
+    // for (const auto id : *m_baked_graph) {
+    //     const auto& [_, description_variant] = m_dag.get_vertex_value(id);
+    //     if (not is<FrameBuilder::TaskDescription>(description_variant)) continue;
+
+    //    const auto& task = as<FrameBuilder::TaskDescription>(description_variant);
+    //    if (not task.type == TaskDescriptionType::RASTER) continue;
+
+    //    // write
+    //    for (const auto [_, to] : m_dag.adjacent_edges(id)) {
+    //        const auto& [_, attachment_variant] = m_dag.get_vertex_value(to);
+    //        if (not is<ImageDescription>(attachment_variant) or not is<RetainedImageDescription>(attachment_variant))
+    //            continue;
+    //    }
+
+    //    // read
+    //    for (const auto [_, to] : m_dag.reversed_view().adjacent_edges(id)) {
+    //        const auto& [_, attachment_variant] = m_dag.get_vertex_value(to);
+    //        if (not is<ImageDescription>(attachment_variant) or not is<RetainedImageDescription>(attachment_variant))
+    //            continue;
+    //    }
+    // }
+
+    // struct RenderingInfo {
+    //     struct Attachment {
+    //         struct Resolve {
+    //             Ref<const gpu::ImageView> image_view;
+    //             ResolveModeFlag           mode;
+    //             gpu::ImageLayout          layout = ImageLayout::ATTACHMENT_OPTIMAL;
+    //         };
+
+    //    Ref<const gpu::ImageView> image_view;
+    //    gpu::ImageLayout          layout = ImageLayout::ATTACHMENT_OPTIMAL;
+
+    //    std::optional<Resolve> resolve = std::nullopt;
+
+    //    AttachmentLoadOperation  load_op  = AttachmentLoadOperation::CLEAR;
+    //    AttachmentStoreOperation store_op = AttachmentStoreOperation::STORE;
+
+    //    std::optional<ClearValue> clear_value = std::nullopt;
+    // };
+
+    //    math::irect render_area;
+    //    u32         layer_count = 1u;
+    //    u32         view_mask   = 0u;
+
+    //    std::vector<Attachment>   color_attachments;
+    //    std::optional<Attachment> depth_attachment   = std::nullopt;
+    //    std::optional<Attachment> stencil_attachment = std::nullopt;
+    // };
+
+    auto& cmb = *frame.m_cmb;
+    Try(cmb.begin());
+    for (const auto id : *m_baked_graph) {
+        const auto& [_, node] = m_dag.get_vertex_value(id);
+
+        // Try(std::visit(Overloaded {
+        //                  [](const ImageDescription& description) noexcept {
+
+        //    },
+        //    [](const RetainedImageDescription& description) noexcept {
+
+        //    },
+        //    [](const FrameBuilder::TaskDescription& task) mutable noexcept {
+        //        cmb.begin_debug_region(std::format("Task:{}", task.name));
+        //        switch (task.type) {
+        //            case TaskDescription::Type::RASTER: {
+        //                auto& [color_attachments,
+        //                       depth_attachment,
+        //                       stencil_attachment] = *stdr::find_if(read_attachments,
+        //                                                            [id](const auto& pair) noexcept {
+        //                                                                return pair.first == id;
+        //                                                            });
+        //                auto raster_task           = RasterTask {
+        //                    .rendering_info = gpu::
+        //                      RenderingInfo { .render_area        = render_area,
+        //                                     .color_attachments  = std::move(color_attachments),
+        //                                     .depth_attachment   = std::move(depth_attachment),
+        //                                     .stencil_attachment = std::move(stencil_attachment) },
+        //                    .cmb = Try(command_pool.create_command_buffer(gpu::CommandBufferLevel::SECONDARY))
+        //                };
+        //                cmb.begin_rendering(raster_task.rendering_info);
+
+        //    task.execute(resources, cmb);
+
+        //    cmb.end_rendering();
+        // } break;
+        // case TaskDescription::Type::COMPUTE: {
+        // } break;
+        // case TaskDescription::Type::TRANSFER: {
+        //    auto raster_task = TransferTask {
+        //        .cmb = Try(command_pool.create_command_buffer(gpu::CommandBufferLevel::SECONDARY))
+        //    };
+        //    cmb.begin_rendering(raster_task.rendering_info);
+
+        //    task.execute(resources, cmb);
+
+        //    cmb.end_rendering();
+        // } break;
+        // case TaskDescription::Type::RAYTRACING: {
+        // } break;
+        // }
+        // cmb.end_debug_region();
+
+        //    attachments.clear();
+        // } },
+        // node));
+    }
+
+    Try(cmb.end());
+
+    TryDiscard(transition_fence.wait());
+
+    Return frame;
+}
 } // namespace stormkit::engine

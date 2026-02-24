@@ -7,9 +7,7 @@ module stormkit.engine;
 
 import std;
 
-import stormkit.core;
-import stormkit.log;
-import stormkit.gpu;
+import stormkit;
 
 import :renderer;
 import :renderer.framegraph;
@@ -20,9 +18,10 @@ namespace stdr = std::ranges;
 namespace cm   = stormkit::monadic;
 
 namespace stormkit::engine {
-    LOGGER("Renderer")
+    LOGGER("renderer")
 
     namespace {
+        [[maybe_unused]]
         constexpr auto RAYTRACING_EXTENSIONS = std::array<std::string_view, 0> {
             // "VK_KHR_ray_tracing_pipeline"sv,     "VK_KHR_acceleration_structure"sv, "VK_KHR_buffer_device_address"sv,
             // "VK_KHR_deferred_host_operations"sv, "VK_EXT_descriptor_indexing"sv,    "VK_KHR_spirv_1_4"sv,
@@ -104,6 +103,8 @@ namespace stormkit::engine {
         Try(do_init_render_surface(std::move(window)));
         ilog("GPU windowed render surface successfully initialized. ✓");
 
+        m_resource_store = ResourceStore { *m_device };
+
         ilog("Renderer initialized!");
         Return {};
     }
@@ -141,20 +142,22 @@ namespace stormkit::engine {
 
     /////////////////////////////////////
     /////////////////////////////////////
-    auto Renderer::thread_loop(std::mutex& framegraph_mutex, std::atomic_bool& rebuild_graph, std::stop_token token) noexcept
-      -> void {
+    auto Renderer::thread_loop(std::mutex&       framegraph_mutex,
+                               std::atomic_bool& rebuild_graph,
+                               std::atomic_bool& window_is_open,
+                               std::stop_token   token) noexcept -> void {
         set_current_thread_name("StormKit:RenderThread");
-        // auto logger_singleton = log::Logger::create_logger_instance<log::ConsoleLogger>();
 
         m_command_buffers = TryAssert(m_main_command_pool->create_command_buffers(m_surface->buffering_count()),
                                       "Failed to create main command buffers");
 
         for (;;) {
             if (token.stop_requested()) break;
-
-            auto frame = TryAssert(m_surface->begin_frame(*m_device), "Failed to start frame!");
-            TryAssert(do_render(framegraph_mutex, rebuild_graph, frame), "Failed to render frame!");
-            TryAssert(m_surface->present_frame(m_raster_queue, frame), "Failed to present frame!");
+            if (window_is_open) {
+                auto frame = TryAssert(m_surface->begin_frame(*m_device), "Failed to start frame!");
+                TryAssert(do_render(framegraph_mutex, rebuild_graph, frame), "Failed to render frame!");
+                TryAssert(m_surface->present_frame(m_raster_queue, frame), "Failed to present frame!");
+            }
         }
 
         m_device->wait_idle();
@@ -167,7 +170,7 @@ namespace stormkit::engine {
         if (rebuild_graph) {
             auto _ = std::unique_lock { framegraph_mutex };
 
-            for (auto&& frame : m_frames) m_frame_pool.recycle_frame(std::move(*frame));
+            for (auto&& _frame : m_frames) m_frame_pool.recycle_frame(std::move(*_frame));
 
             m_frames.clear();
             m_frames.resize(m_surface->buffering_count());
