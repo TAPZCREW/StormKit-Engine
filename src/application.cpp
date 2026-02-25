@@ -37,8 +37,7 @@ namespace stormkit::engine {
     auto Application::run(stdfs::path boot_lua) -> void {
         expects(stdfs::is_regular_file(boot_lua));
 
-        auto framegraph_mutex = std::mutex {};
-        auto rebuild_graph    = std::atomic_bool { true };
+        auto frame_builder_mutex = std::mutex {};
 
         auto window_is_open = std::atomic_bool { true };
 
@@ -48,7 +47,7 @@ namespace stormkit::engine {
         });
 
         auto lua_started = false;
-        m_renderer->start_rendering(framegraph_mutex, rebuild_graph, window_is_open);
+        m_renderer->start_rendering(frame_builder_mutex, window_is_open);
         m_window->event_loop([&] mutable {
             if (not lua_started) {
                 auto _      = m_thread_pool.post_task<void>([this, &boot_lua] mutable noexcept {
@@ -76,7 +75,7 @@ namespace stormkit::engine {
 
             if (window_is_open) {
                 m_world->step(fsecond { 0 });
-                m_renderer->render_frame(framegraph_mutex, rebuild_graph, m_build_frame);
+                m_renderer->build_frame(frame_builder_mutex, m_build_frame);
             }
         });
     }

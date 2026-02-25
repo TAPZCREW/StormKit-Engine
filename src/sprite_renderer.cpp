@@ -196,15 +196,14 @@ namespace stormkit::engine {
     //////////////////////////////////////
     //////////////////////////////////////
     auto BidimPipeline::update_framegraph(const Renderer& renderer, FrameBuilder& graph) noexcept -> void {
-        const auto& device = renderer.device();
-
         static constexpr auto UPDATE_VERTEX_TASK_NAME  = "stormkit:2d_pipeline:update_vertex_buffer";
         static constexpr auto RENDER_SPRITES_TASK_NAME = "stormkit:2d_pipeline:render_sprites";
         static constexpr auto BACKBUFFER_NAME          = "stormkit:2d_pipeline:backbuffer";
         static constexpr auto VERTEX_BUFFER_NAME       = "stormkit:2d_pipeline:update_vertex_buffer:vertex_buffer";
         static constexpr auto STAGING_BUFFER_NAME      = "stormkit:2d_pipeline:update_vertex_buffer:staging_buffer";
 
-        auto should_upload = false;
+        const auto& device        = renderer.device();
+        auto        should_upload = false;
         if (not m_render_data.vertex_buffer.initialized()) [[unlikely]] {
             m_render_data
               .vertex_buffer = TryAssert(gpu::Buffer::create(device,
@@ -234,7 +233,7 @@ namespace stormkit::engine {
                   builder.write_buffer(staging_buffer_id);
               },
               [this](auto& frame_resources, auto& cmb) noexcept {
-                  const auto& staging_buffer = frame_resources.get_buffer(STAGING_BUFFER_NAME);
+                  // const auto& staging_buffer = frame_resources.get_buffer(STAGING_BUFFER_NAME);
                   // staging_buffer.upload();
 
                   // cmb.copy_buffer(staging_buffer, *m_render_data.vertex_buffer, SPRITE_VERTEX_BUFFER_SIZE);
@@ -242,7 +241,7 @@ namespace stormkit::engine {
               });
         }
 
-        auto backbuffer_id = GraphID { INVALID_ID };
+        auto backbuffer_id = FrameBuilder::ResourceID {};
         graph.add_raster_task(
           RENDER_SPRITES_TASK_NAME,
           [&](auto& builder) noexcept {
@@ -254,8 +253,7 @@ namespace stormkit::engine {
                                                      .format = gpu::PixelFormat::RGBA8_UNORM,
                                                      .usages = gpu::ImageUsageFlag::COLOR_ATTACHMENT
                                                                | gpu::ImageUsageFlag::TRANSFER_SRC,
-                                                     .layers = 1u },
-                                                   true);
+                                                     .layers = 1u });
               builder.write_attachment(backbuffer_id, gpu::ClearColor {});
           },
           [this](auto& frame_resources, auto& cmb) noexcept {
@@ -265,7 +263,7 @@ namespace stormkit::engine {
               cmb.bind_vertex_buffers(buffers, std::array { 0_u64 });
               for (auto&& [_, sprite_data] : m_sprites) cmb.draw(4);
           },
-          true);
+          FrameBuilder::ROOT);
 
         graph.set_backbuffer(backbuffer_id);
     }

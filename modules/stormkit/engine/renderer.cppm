@@ -71,9 +71,7 @@ export namespace stormkit::engine {
                              ThreadPool&                    thread_pool,
                              OptionalRef<const wsi::Window> window) noexcept -> gpu::Expected<Heap<Renderer>>;
 
-        auto start_rendering(std::mutex&       framegraph_mutex,
-                             std::atomic_bool& rebuild_graph,
-                             std::atomic_bool& window_is_open) noexcept -> void;
+        auto start_rendering(std::mutex& frame_builder_mutex, std::atomic_bool& window_is_open) noexcept -> void;
 
         auto instance() const noexcept -> const gpu::Instance&;
         auto device() const noexcept -> const gpu::Device&;
@@ -83,8 +81,7 @@ export namespace stormkit::engine {
         template<typename Self>
         auto resources(this Self& self) noexcept -> meta::ForwardConst<Self, ResourceStore>&;
 
-        auto render_frame(std::mutex& framegraph_mutex, std::atomic_bool& rebuild_graph, BuildFrameClosure build_frame) noexcept
-          -> void;
+        auto build_frame(std::mutex& frame_builder_mutex, BuildFrameClosure build_frame) noexcept -> void;
 
       private:
         auto do_init(std::string_view, OptionalRef<const wsi::Window>) noexcept -> gpu::Expected<void>;
@@ -92,8 +89,8 @@ export namespace stormkit::engine {
         auto do_init_device() noexcept -> gpu::Expected<void>;
         auto do_init_render_surface(OptionalRef<const wsi::Window>) noexcept -> gpu::Expected<void>;
 
-        auto thread_loop(std::mutex&, std::atomic_bool&, std::atomic_bool&, std::stop_token) noexcept -> void;
-        auto do_render(std::mutex&, std::atomic_bool&, RenderSurface::Frame&) noexcept -> gpu::Expected<void>;
+        auto thread_loop(std::mutex&, std::atomic_bool&, std::stop_token) noexcept -> void;
+        auto do_render(std::mutex&, RenderSurface::Frame&) noexcept -> gpu::Expected<void>;
 
         bool                        m_validation_layers_enabled = false;
         u32                         m_current_frame             = 0;
@@ -111,10 +108,7 @@ export namespace stormkit::engine {
 
         std::jthread m_render_thread;
 
-        FramePool    m_frame_pool;
-        FrameBuilder m_frame_builder;
-
-        std::vector<DeferInit<Frame>> m_frames;
+        FrameBuilder m_frame;
     };
 
 } // namespace stormkit::engine
@@ -192,33 +186,11 @@ namespace stormkit::engine {
     /////////////////////////////////////
     /////////////////////////////////////
     STORMKIT_FORCE_INLINE
-    inline auto Renderer::start_rendering(std::mutex&       framegraph_mutex,
-                                          std::atomic_bool& rebuild_graph,
-                                          std::atomic_bool& window_is_open) noexcept -> void {
-        m_render_thread = std::jthread { bind_front(&Renderer::thread_loop,
-                                                    this,
-                                                    std::ref(framegraph_mutex),
-                                                    std::ref(rebuild_graph),
-                                                    std::ref(window_is_open)) };
+    inline auto Renderer::start_rendering(std::mutex& frame_builder_mutex, std::atomic_bool& window_is_open) noexcept -> void {
+        m_render_thread = std::jthread {
+            bind_front(&Renderer::thread_loop, this, std::ref(frame_builder_mutex), std::ref(window_is_open))
+        };
         set_thread_name(m_render_thread, "StormKit:RenderThread");
-    }
-
-    /////////////////////////////////////
-    /////////////////////////////////////
-    STORMKIT_FORCE_INLINE
-    inline auto Renderer::render_frame(std::mutex&       framegraph_mutex,
-                                       std::atomic_bool& rebuild_graph,
-                                       BuildFrameClosure build_frame) noexcept -> void {
-        auto _ = std::unique_lock { framegraph_mutex };
-
-        auto builder = FrameBuilder {};
-        std::invoke(build_frame, builder);
-        builder.bake();
-        if (not m_frame_builder.baked() or m_frame_builder.hash() != builder.hash()) {
-            ilog("FrameGraph has been updated");
-            m_frame_builder = std::move(builder);
-            rebuild_graph   = true;
-        }
     }
 
     /////////////////////////////////////
@@ -268,5 +240,16 @@ namespace stormkit::engine {
     inline auto Renderer::resources(this Self& self) noexcept -> meta::ForwardConst<Self, ResourceStore>& {
         EXPECTS(self.m_main_command_pool.initialized());
         return std::forward_like<Self&>(self.m_resource_store.get());
+    }
+
+    /////////////////////////////////////
+    /////////////////////////////////////
+    STORMKIT_FORCE_INLINE
+    inline auto Renderer::build_frame(std::mutex& frame_builder_mutex, BuildFrameClosure build_frame) noexcept -> void {
+        auto frame = FrameBuilder {};
+        std::invoke(build_frame, frame);
+
+        auto _  = std::unique_lock { frame_builder_mutex };
+        m_frame = std::move(frame);
     }
 } // namespace stormkit::engine

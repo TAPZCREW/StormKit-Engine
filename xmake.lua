@@ -66,13 +66,17 @@ add_requires("tl_function_ref", {
         std_import = true,
     },
 })
+local is_libcpp = is_plat("linux") and has_config("runtimes") and get_config("runtimes"):startswith("c++")
 add_requires("luau", {
     system = false,
-    version = "master",
+    version = "upstream",
     configs = {
         shared = false,
         extern_c = true,
         build_cli = false,
+        cxxflags = is_libcpp and { "-stdlib=libc++" } or nil,
+        shflags = is_libcpp and { "-stdlib=libc++" } or nil,
+        arflags = is_libcpp and { "-stdlib=libc++" } or nil,
     },
 })
 add_requires("libktx")
@@ -84,7 +88,7 @@ add_requires("libjpeg-turbo", is_plat("windows") and {
         shared = true,
     },
 } or {})
-add_requires("sol2", {
+add_requires("sol2_luau", {
     system = false,
     version = "develop",
 })
@@ -109,9 +113,15 @@ if is_plat("linux") then
         "xcb-util-wm",
         "xcb-util-errors",
         "wayland",
-        "wayland-protocols",
-        "libxkbcommon"
+        "wayland-protocols"
     )
+    add_requires("libxkbcommon", {
+        system = false,
+        configs = {
+            wayland = true,
+            x11 = true,
+        },
+    })
 end
 
 add_requires(stormkit_dep_name, {
@@ -129,6 +139,7 @@ add_requires(stormkit_dep_name, {
 
         -- shared = true,
         debug = is_mode("debug"),
+        lto = get_config("lto") or false,
     },
     version = "dev",
     alias = "stormkit",
