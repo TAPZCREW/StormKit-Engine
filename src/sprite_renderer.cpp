@@ -196,11 +196,11 @@ namespace stormkit::engine {
     //////////////////////////////////////
     //////////////////////////////////////
     auto BidimPipeline::update_framegraph(const Renderer& renderer, FrameBuilder& graph) noexcept -> void {
-        static constexpr auto UPDATE_VERTEX_TASK_NAME  = "stormkit:2d_pipeline:update_vertex_buffer";
-        static constexpr auto RENDER_SPRITES_TASK_NAME = "stormkit:2d_pipeline:render_sprites";
-        static constexpr auto BACKBUFFER_NAME          = "stormkit:2d_pipeline:backbuffer";
-        static constexpr auto VERTEX_BUFFER_NAME       = "stormkit:2d_pipeline:update_vertex_buffer:vertex_buffer";
-        static constexpr auto STAGING_BUFFER_NAME      = "stormkit:2d_pipeline:update_vertex_buffer:staging_buffer";
+        static constexpr auto UPDATE_VERTEX_TASK_NAME  = "StormKit:2d_pipeline:update_vertex_buffer";
+        static constexpr auto RENDER_SPRITES_TASK_NAME = "StormKit:2d_pipeline:render_sprites";
+        static constexpr auto BACKBUFFER_NAME          = "StormKit:2d_pipeline:backbuffer";
+        static constexpr auto VERTEX_BUFFER_NAME       = "StormKit:2d_pipeline:render_sprites:vertex_buffer";
+        static constexpr auto STAGING_BUFFER_NAME      = "StormKit:2d_pipeline:update_vertex_buffer:staging_buffer";
 
         const auto& device        = renderer.device();
         auto        should_upload = false;
@@ -220,24 +220,24 @@ namespace stormkit::engine {
         const auto vertex_buffer_id = graph.retain_buffer(VERTEX_BUFFER_NAME, *m_render_data.vertex_buffer);
 
         if (should_upload) {
-            const auto& task = graph.add_transfer_task(
+            auto        staging_buffer_id = FrameBuilder::ResourceID {};
+            const auto& task              = graph.add_transfer_task(
               UPDATE_VERTEX_TASK_NAME,
               [&](auto& builder) noexcept {
-                  const auto staging_buffer_id = builder.create_buffer(STAGING_BUFFER_NAME,
-                                                                       {
-                                                                         .usages = gpu::BufferUsageFlag::TRANSFER_SRC,
-                                                                         .size   = SPRITE_VERTEX_BUFFER_SIZE,
-                                                                       });
+                  staging_buffer_id = builder.create_buffer(STAGING_BUFFER_NAME,
+                                                            {
+                                                              .usages = gpu::BufferUsageFlag::TRANSFER_SRC,
+                                                              .size   = SPRITE_VERTEX_BUFFER_SIZE,
+                                                            });
 
                   builder.write_buffer(vertex_buffer_id);
                   builder.write_buffer(staging_buffer_id);
               },
-              [this](auto& frame_resources, auto& cmb) noexcept {
-                  // const auto& staging_buffer = frame_resources.get_buffer(STAGING_BUFFER_NAME);
+              [staging_buffer_id, this](auto& frame_resources, auto& cmb) noexcept {
+                  const auto& staging_buffer = frame_resources.get_buffer(staging_buffer_id);
                   // staging_buffer.upload();
 
-                  // cmb.copy_buffer(staging_buffer, *m_render_data.vertex_buffer, SPRITE_VERTEX_BUFFER_SIZE);
-                  m_dirty = true;
+                  cmb.copy_buffer(staging_buffer, *m_render_data.vertex_buffer, SPRITE_VERTEX_BUFFER_SIZE);
               });
         }
 
@@ -256,7 +256,7 @@ namespace stormkit::engine {
                                                      .layers = 1u });
               builder.write_attachment(backbuffer_id, gpu::ClearColor {});
           },
-          [this](auto& frame_resources, auto& cmb) noexcept {
+          [this](const auto& frame_resources, auto& cmb) noexcept {
               auto buffers = as_refs(m_render_data.vertex_buffer);
 
               cmb.bind_pipeline(m_render_data.pipeline);

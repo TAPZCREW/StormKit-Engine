@@ -5,7 +5,7 @@ target("game", function()
     add_rules("compile.shaders")
 
     add_rules(stormkit_rule_prefix .. "stormkit::application")
-    set_values("stormkit.components", { "log", "entities", "image", "wsi", "gpu", "lua" })
+    set_values("stormkit.components", { "stormkit", "log", "entities", "image", "wsi", "gpu", "lua" })
 
     add_rules("platform.windows.subsystem")
     set_values("windows.subsystem", "console")

@@ -5,7 +5,7 @@ add_repositories("tapzcrew-repo https://github.com/tapzcrew/xmake-repo main")
 option("tests", { default = false, category = "root menu/build" })
 option("sanitizers", { default = false, category = "root menu/build" })
 option("mold", { default = false, category = "root menu/build" })
-option("lto", { default = false, category = "root menu/build" })
+option("lto", { default = true, category = "root menu/build" })
 option("shared_deps", { default = false, category = "root menu/build" })
 
 option("stormkit", { description = "local stormkit folder", type = "string", category = "root menu/support" })
@@ -14,12 +14,13 @@ option("compile_commands", { default = false, category = "root menu/support" })
 option("vsxmake", { default = false, category = "root menu/support" })
 option("devmode", {
     category = "root menu/support",
-    deps = { "tests", "compile_commands", "mold", "sanitizers" },
+    deps = { "tests", "lto", "sanitizers" },
     after_check = function(option)
         if option:enabled() then
-            for _, name in ipairs({ "tests", "compile_commands", "mold", "sanitizers" }) do
+            for _, name in ipairs({ "tests", "sanitizers" }) do
                 option:dep(name):enable(true)
             end
+            option:dep("lto"):enable(false)
         end
     end,
 })
@@ -137,9 +138,9 @@ add_requires(stormkit_dep_name, {
         tests = false,
         tools = false,
 
-        -- shared = true,
+        shared = get_config("kind") == "shared",
         debug = is_mode("debug"),
-        lto = get_config("lto") or false,
+        lto = get_config("lto"),
     },
     version = "dev",
     alias = "stormkit",
@@ -156,8 +157,10 @@ namespace("stormkit", function()
 
         add_rules("compile.shaders")
 
+        set_basename("stormkit-engine")
+
         add_rules(stormkit_rule_prefix .. "stormkit::library")
-        set_values("stormkit.components", { "log", "entities", "image", "wsi", "gpu", "lua" })
+        set_values("stormkit.components", { "stormkit", "log", "entities", "image", "wsi", "gpu", "lua" })
 
         add_includedirs("include")
 

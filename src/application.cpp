@@ -45,8 +45,14 @@ namespace stormkit::engine {
             window_is_open = false;
             return true;
         });
+        m_window->on<wsi::EventType::KEY_DOWN>([this](auto, auto key, auto) noexcept {
+            if (key == wsi::Key::ESCAPE) m_window->close();
+            else if (key == wsi::Key::F1)
+                m_renderer->dump_framegraph();
+        });
 
         auto lua_started = false;
+        m_renderer->build_frame(frame_builder_mutex, m_build_frame);
         m_renderer->start_rendering(frame_builder_mutex, window_is_open);
         m_window->event_loop([&] mutable {
             if (not lua_started) {

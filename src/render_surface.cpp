@@ -26,24 +26,30 @@ namespace stormkit::engine {
         const auto& raster_queue = renderer.raster_queue();
         const auto& command_pool = renderer.main_command_pool();
 
-        m_surface   = Try(gpu::Surface::create_from_window(instance, window));
+        m_surface = Try(gpu::Surface::create_from_window(instance, window));
+        device.set_object_name(*m_surface, "StormKit:main_surface");
         m_swapchain = Try(gpu::SwapChain::create(device, m_surface, window.extent(), std::nullopt));
+        device.set_object_name(*m_swapchain, "StormKit:main_swapchain");
 
         const auto image_count = stdr::size(m_swapchain->images());
         m_buffering_count      = (image_count >= 4) ? 3 : as<u32>(image_count);
 
-        for (auto _ : range(m_buffering_count)) {
-            m_submission_resources.push_back({
+        for (auto i : range(m_buffering_count)) {
+            auto& res = m_submission_resources.emplace_back(SubmissionResources {
               .in_flight       = Try(gpu::Fence::create_signaled(device)),
               .image_available = Try(gpu::Semaphore::create(device)),
               .render_finished = Try(gpu::Semaphore::create(device)),
             });
+            device.set_object_name(res.in_flight, std::format("StormKit:in_flight_fence_{}", i));
+            device.set_object_name(res.image_available, std::format("StormKit:image_available_semaphore_{}", i));
+            device.set_object_name(res.render_finished, std::format("StormKit:render_finished_semaphore_{}", i));
         }
 
         auto transition_command_buffers = Try(command_pool.create_command_buffers(image_count, gpu::CommandBufferLevel::PRIMARY));
 
         for (auto i : range(image_count)) {
-            auto&& image                     = m_swapchain->images()[i];
+            auto&& image = m_swapchain->images()[i];
+            device.set_object_name(image, std::format("StormKit:swapchain_image_{}", i));
             auto&& transition_command_buffer = transition_command_buffers[i];
 
             TryAssert(transition_command_buffer.begin(true), "");
@@ -67,7 +73,7 @@ namespace stormkit::engine {
         const auto& render_finished = submission_resources.render_finished;
         auto&       in_flight       = submission_resources.in_flight;
 
-        TryDiscard(in_flight.wait());
+        TryAssert(in_flight.wait(), "Failed to wait for in flight {} fence", m_current_frame);
         TryDiscard(in_flight.reset());
 
         auto&& [_, image_index] = Try(m_swapchain->acquire_next_image(100ms, image_available));

@@ -29,6 +29,55 @@ export namespace stormkit::engine {
 
     inline constexpr auto INVALID_TEXTURE_ID = std::numeric_limits<TextureID>::max();
 
+    struct FrameResources {
+        using Images     = std::vector<std::pair<engine::FrameBuilder::ResourceID, gpu::Image>>;
+        using ImagesMap  = std::vector<std::pair<engine::FrameBuilder::ResourceID, Ref<const gpu::Image>>>;
+        using ImageViews = std::vector<std::pair<engine::FrameBuilder::CombinedID, gpu::ImageView>>;
+        using Buffers    = std::vector<std::pair<engine::FrameBuilder::ResourceID, gpu::Buffer>>;
+        using BuffersMap = std::vector<std::pair<engine::FrameBuilder::ResourceID, Ref<const gpu::Buffer>>>;
+
+        gpu::Semaphore semaphore;
+        gpu::Fence     fence;
+
+        Images  created_images  = {};
+        Buffers created_buffers = {};
+
+        ImagesMap  images      = {};
+        BuffersMap buffers     = {};
+        ImageViews image_views = {};
+
+        OptionalRef<const gpu::Image> backbuffer = std::nullopt;
+
+        struct Pass {
+            gpu::CommandBuffer cmb;
+        };
+
+        gpu::CommandBuffer main_cmb;
+        std::vector<Pass>  passes = {};
+    };
+
+    class FrameResourceCache {
+      public:
+        explicit FrameResourceCache(const gpu::Device& device) noexcept;
+        ~FrameResourceCache() noexcept;
+
+        FrameResourceCache(const FrameResourceCache&)                    = delete;
+        auto operator=(const FrameResourceCache&) -> FrameResourceCache& = delete;
+
+        FrameResourceCache(FrameResourceCache&&) noexcept;
+        auto operator=(FrameResourceCache&&) noexcept -> FrameResourceCache&;
+
+        auto cache_old_resources(FrameResources&& resources) noexcept -> void;
+
+        auto get_or_create_image(const gpu::Image::CreateInfo& create_info) noexcept -> gpu::Image;
+        auto get_or_create_buffer(const gpu::Buffer::CreateInfo& create_info) noexcept -> gpu::Buffer;
+
+      private:
+        Ref<const gpu::Device>                      m_device;
+        std::vector<std::pair<hash32, gpu::Image>>  m_images;
+        std::vector<std::pair<hash32, gpu::Buffer>> m_buffers;
+    };
+
     class ResourceStore {
       public:
         explicit ResourceStore(const gpu::Device& device) noexcept;
@@ -81,6 +130,8 @@ export namespace stormkit::engine {
         template<typename Self>
         auto resources(this Self& self) noexcept -> meta::ForwardConst<Self, ResourceStore>&;
 
+        auto dump_framegraph() const noexcept -> void;
+
         auto build_frame(std::mutex& frame_builder_mutex, BuildFrameClosure build_frame) noexcept -> void;
 
       private:
@@ -92,15 +143,18 @@ export namespace stormkit::engine {
         auto thread_loop(std::mutex&, std::atomic_bool&, std::stop_token) noexcept -> void;
         auto do_render(std::mutex&, RenderSurface::Frame&) noexcept -> gpu::Expected<void>;
 
-        bool                        m_validation_layers_enabled = false;
-        u32                         m_current_frame             = 0;
-        math::uextent2              m_extent;
-        DeferInit<gpu::Instance>    m_instance;
-        Heap<gpu::Device>           m_device;
-        DeferInit<RenderSurface>    m_surface;
-        DeferInit<gpu::Queue>       m_raster_queue;
-        DeferInit<gpu::CommandPool> m_main_command_pool;
-        DeferInit<ResourceStore>    m_resource_store;
+        auto realize_frame(RenderSurface::Frame&) noexcept -> FrameResources;
+
+        bool                          m_validation_layers_enabled = false;
+        u32                           m_current_frame             = 0;
+        math::uextent2                m_extent;
+        DeferInit<gpu::Instance>      m_instance;
+        Heap<gpu::Device>             m_device;
+        DeferInit<RenderSurface>      m_surface;
+        DeferInit<gpu::Queue>         m_raster_queue;
+        DeferInit<gpu::CommandPool>   m_main_command_pool;
+        DeferInit<ResourceStore>      m_resource_store;
+        DeferInit<FrameResourceCache> m_frame_resource_cache;
 
         Ref<ThreadPool> m_thread_pool;
 
@@ -109,6 +163,10 @@ export namespace stormkit::engine {
         std::jthread m_render_thread;
 
         FrameBuilder m_frame;
+
+        std::vector<DeferInit<FrameResources>> m_frame_resources;
+
+        mutable std::atomic_bool m_dump_next_graph = false;
     };
 
 } // namespace stormkit::engine
@@ -139,6 +197,23 @@ namespace stormkit::engine {
 
     /////////////////////////////////////
     /////////////////////////////////////
+    inline FrameResourceCache::FrameResourceCache(const gpu::Device& device) noexcept : m_device { as_ref(device) } {
+    }
+
+    /////////////////////////////////////
+    /////////////////////////////////////
+    inline FrameResourceCache::~FrameResourceCache() noexcept = default;
+
+    /////////////////////////////////////
+    /////////////////////////////////////
+    inline FrameResourceCache::FrameResourceCache(FrameResourceCache&&) noexcept = default;
+
+    /////////////////////////////////////
+    /////////////////////////////////////
+    inline auto FrameResourceCache::operator=(FrameResourceCache&&) noexcept -> FrameResourceCache& = default;
+
+    /////////////////////////////////////
+    /////////////////////////////////////
     STORMKIT_FORCE_INLINE
     Renderer::Renderer(ThreadPool& thread_pool, PrivateFuncTag) noexcept
         : m_thread_pool { as_ref_mut(thread_pool) } {
@@ -154,12 +229,49 @@ namespace stormkit::engine {
     /////////////////////////////////////
     /////////////////////////////////////
     STORMKIT_FORCE_INLINE
-    inline Renderer::Renderer(Renderer&&) noexcept = default;
+    inline Renderer::Renderer(Renderer&& other) noexcept
+        : m_validation_layers_enabled { std::exchange(other.m_validation_layers_enabled, false) },
+          m_current_frame { std::exchange(other.m_current_frame, 0) },
+          m_extent { std::exchange(other.m_extent, {}) },
+          m_instance { std::exchange(other.m_instance, {}) },
+          m_device { std::exchange(other.m_device, {}) },
+          m_surface { std::exchange(other.m_surface, {}) },
+          m_raster_queue { std::exchange(other.m_raster_queue, {}) },
+          m_main_command_pool { std::exchange(other.m_main_command_pool, {}) },
+          m_resource_store { std::exchange(other.m_resource_store, {}) },
+          m_thread_pool { other.m_thread_pool },
+          m_command_buffers { std::exchange(other.m_command_buffers, {}) },
+          m_render_thread { std::exchange(other.m_render_thread, {}) },
+          m_frame { std::exchange(other.m_frame, {}) },
+          m_dump_next_graph { other.m_dump_next_graph.load() } {
+        other.m_dump_next_graph.store(false);
+    }
 
     /////////////////////////////////////
     /////////////////////////////////////
     STORMKIT_FORCE_INLINE
-    inline auto Renderer::operator=(Renderer&&) noexcept -> Renderer& = default;
+    inline auto Renderer::operator=(Renderer&& other) noexcept -> Renderer& {
+        if (&other == this) [[unlikely]]
+            return *this;
+
+        m_validation_layers_enabled = std::exchange(other.m_validation_layers_enabled, false);
+        m_current_frame             = std::exchange(other.m_current_frame, 0);
+        m_extent                    = std::exchange(other.m_extent, {});
+        m_instance                  = std::exchange(other.m_instance, {});
+        m_device                    = std::exchange(other.m_device, {});
+        m_surface                   = std::exchange(other.m_surface, {});
+        m_raster_queue              = std::exchange(other.m_raster_queue, {});
+        m_main_command_pool         = std::exchange(other.m_main_command_pool, {});
+        m_resource_store            = std::exchange(other.m_resource_store, {});
+        m_thread_pool               = as_ref_mut(other.m_thread_pool);
+        m_command_buffers           = std::exchange(other.m_command_buffers, {});
+        m_render_thread             = std::exchange(other.m_render_thread, {});
+        m_frame                     = std::exchange(other.m_frame, {});
+        m_dump_next_graph           = other.m_dump_next_graph.load();
+        other.m_dump_next_graph.store(false);
+
+        return *this;
+    }
 
     /////////////////////////////////////
     /////////////////////////////////////
@@ -240,6 +352,13 @@ namespace stormkit::engine {
     inline auto Renderer::resources(this Self& self) noexcept -> meta::ForwardConst<Self, ResourceStore>& {
         EXPECTS(self.m_main_command_pool.initialized());
         return std::forward_like<Self&>(self.m_resource_store.get());
+    }
+
+    /////////////////////////////////////
+    /////////////////////////////////////
+    STORMKIT_FORCE_INLINE
+    inline auto Renderer::dump_framegraph() const noexcept -> void {
+        m_dump_next_graph = true;
     }
 
     /////////////////////////////////////

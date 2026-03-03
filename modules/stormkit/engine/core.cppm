@@ -27,6 +27,10 @@ export namespace stormkit::engine {
         FailedToInitializeRenderer,
     };
 
+    struct STORMKIT_ENGINE_API KeyHandler {
+        HashMap<wsi::Key, std::function<void()>> keys;
+    };
+
     class STORMKIT_ENGINE_API Application final {
         struct PrivateTag {};
 

@@ -15,105 +15,7 @@ import stormkit;
 import :renderer.render_surface;
 
 export namespace stormkit::engine {
-    // struct RasterTask {
-    //     gpu::RenderingInfo rendering_info;
-    //     gpu::CommandBuffer cmb;
-    // };
-
-    // struct ComputeTask {
-    //     gpu::CommandBuffer cmb;
-    // };
-
-    // using Task = std::variant<RasterTask, ComputeTask>;
-
-    // class Frame {
-    //   public:
-    //     struct FrameResources {
-    //         template<typename T>
-    //         struct Map {
-    //             GraphID      id;
-    //             hash32       name;
-    //             hash32       hash;
-    //             Ref<const T> value;
-    //         };
-
-    //    std::vector<gpu::Image>     images;
-    //    std::vector<gpu::ImageView> views;
-    //    std::vector<gpu::Buffer>    buffers;
-
-    //    std::vector<Map<gpu::Image>>     image_mapper;
-    //    std::vector<Map<gpu::ImageView>> view_mapper;
-    //    std::vector<Map<gpu::Buffer>>    buffer_mapper;
-
-    //    [[nodiscard]]
-    //    auto get_buffer(std::string_view name) noexcept -> const gpu::Buffer&;
-
-    //    [[nodiscard]]
-    //    auto get_image(std::string_view name) noexcept -> const gpu::Image&;
-
-    //    [[nodiscard]]
-    //    auto get_image_view(std::string_view name) noexcept -> const gpu::ImageView&;
-    // };
-
-    //    ~Frame() noexcept;
-
-    //    Frame(Frame&&) noexcept;
-    //    Frame(const Frame&) noexcept = delete;
-
-    //    auto operator=(Frame&&) noexcept -> Frame&;
-    //    auto operator=(const Frame&) noexcept -> Frame& = delete;
-
-    //    auto execute(const gpu::Queue& queue) noexcept -> gpu::Expected<Ref<const gpu::Semaphore>>;
-
-    //    [[nodiscard]]
-    //    auto backbuffer() const noexcept -> const gpu::Image&;
-    //    [[nodiscard]]
-    //    auto fence(this auto& self) noexcept -> decltype(auto);
-
-    //   private:
-    //     constexpr Frame() noexcept;
-
-    //    hash32            m_hash;
-    //    FrameResources    m_resources;
-    //    std::vector<Task> m_tasks = {};
-
-    //    DeferInit<gpu::CommandBuffer> m_cmb;
-    //    DeferInit<gpu::Fence>         m_fence;
-    //    DeferInit<gpu::Semaphore>     m_semaphore;
-
-    //    OptionalRef<const gpu::Image> m_backbuffer;
-
-    //    friend class FrameBuilder;
-    //    friend class FramePool;
-    // };
-
-    // struct Attachment {
-    //     struct Resolve {
-    //         Ref<const gpu::ImageView> image_view;
-    //         ResolveModeFlag           mode;
-    //         gpu::ImageLayout          layout = ImageLayout::ATTACHMENT_OPTIMAL;
-    //     };
-
-    //    Ref<const gpu::ImageView> image_view;
-    //    gpu::ImageLayout          layout = ImageLayout::ATTACHMENT_OPTIMAL;
-
-    //    std::optional<Resolve> resolve = std::nullopt;
-
-    //    AttachmentLoadOperation  load_op  = AttachmentLoadOperation::CLEAR;
-    //    AttachmentStoreOperation store_op = AttachmentStoreOperation::STORE;
-
-    //    std::optional<ClearValue> clear_value = std::nullopt;
-    // };
-
-    // math::irect render_area;
-    // u32         layer_count = 1u;
-    // u32         view_mask   = 0u;
-
-    // std::vector<Attachment>   color_attachments;
-    // std::optional<Attachment> depth_attachment   = std::nullopt;
-    // std::optional<Attachment> stencil_attachment = std::nullopt;
-
-    struct FrameResources {};
+    class FrameResourcesAccessor;
 
     class STORMKIT_ENGINE_API FrameBuilder {
       public:
@@ -123,10 +25,11 @@ export namespace stormkit::engine {
         class FrameTaskBuilder;
 
         using SetupClosure   = FunctionRef<void(FrameTaskBuilder&)>;
-        using ExecuteClosure = std::function<void(FrameResources&, gpu::CommandBuffer&)>;
+        using ExecuteClosure = std::function<void(const FrameResourcesAccessor&, gpu::CommandBuffer&)>;
 
         using ResourceID = std::bitset<32>;
         using TaskID     = std::bitset<32>;
+        using CombinedID = std::bitset<64>;
 
         struct Resource {
             using Data = std::variant<std::monostate,
@@ -141,8 +44,9 @@ export namespace stormkit::engine {
 
             Data data = std::monostate {};
 
-            TaskID read_by  = {};
-            TaskID wrote_by = {};
+            TaskID attached_in = {};
+            TaskID read_by     = {};
+            TaskID wrote_by    = {};
         };
 
         struct Task {
@@ -238,14 +142,19 @@ export namespace stormkit::engine {
         auto set_backbuffer(ResourceID id) noexcept -> void;
 
         [[nodiscard]]
-        auto dump() -> std::string;
+        auto dump() const noexcept -> std::string;
+
+        [[nodiscard]]
+        auto tasks() const noexcept -> const Tasks&;
+        [[nodiscard]]
+        auto resources() const noexcept -> const Resources&;
 
       private:
         [[nodiscard]]
-        auto add_task(std::string&&, Task::Type, SetupClosure, ExecuteClosure&&, std::optional<Root>) noexcept -> TaskID;
+        auto add_task(std::string&&, Task::Type, SetupClosure&&, ExecuteClosure&&, std::optional<Root>) noexcept -> TaskID;
 
-        ResourceID m_next_resource_id = {};
-        TaskID     m_next_task_id     = {};
+        ResourceID m_next_resource_id = { 1 };
+        TaskID     m_next_task_id     = { 1 };
 
         Resources m_resources = {};
         Tasks     m_tasks     = {};
@@ -253,7 +162,31 @@ export namespace stormkit::engine {
         std::optional<ResourceID> m_backbuffer_id = std::nullopt;
     };
 
-    // auto operator==(const FrameBuilder::Node& first, const FrameBuilder::Node& second) noexcept -> bool = delete;
+    class FrameResourcesAccessor {
+      public:
+        using Images     = std::vector<std::pair<engine::FrameBuilder::ResourceID, Ref<const gpu::Image>>>;
+        using ImageViews = std::vector<std::pair<engine::FrameBuilder::CombinedID, gpu::ImageView>>;
+        using Buffers    = std::vector<std::pair<engine::FrameBuilder::ResourceID, Ref<const gpu::Buffer>>>;
+
+        FrameResourcesAccessor(const Images& images, const ImageViews& image_views, const Buffers& buffers) noexcept;
+        ~FrameResourcesAccessor() noexcept;
+
+        FrameResourcesAccessor(const FrameResourcesAccessor&)                    = delete;
+        auto operator=(const FrameResourcesAccessor&) -> FrameResourcesAccessor& = delete;
+
+        FrameResourcesAccessor(FrameResourcesAccessor&&) noexcept                    = delete;
+        auto operator=(FrameResourcesAccessor&&) noexcept -> FrameResourcesAccessor& = delete;
+
+        auto get_image(const FrameBuilder::ResourceID& id) const noexcept -> const gpu::Image&;
+        auto get_image_view(const FrameBuilder::CombinedID& id) const noexcept -> const gpu::ImageView&;
+        auto get_buffer(const FrameBuilder::ResourceID& id) const noexcept -> const gpu::Buffer&;
+
+      private:
+        const Images&     m_images;
+        const Buffers&    m_buffers;
+        const ImageViews& m_image_views;
+    };
+
 } // namespace stormkit::engine
 
 ////////////////////////////////////////////////////////////////////
@@ -264,84 +197,6 @@ namespace stdr = std::ranges;
 namespace stdv = std::views;
 
 namespace stormkit::engine {
-    // /////////////////////////////////////
-    // /////////////////////////////////////
-    // inline auto Frame::FrameResources::get_buffer(std::string_view name) noexcept -> const gpu::Buffer& {
-    //     EXPECTS(not stdr::empty(name));
-
-    //    auto it = stdr::find_if(buffer_mapper, [name = hash(name)](const auto& mapping) noexcept {
-    //        return mapping.name == name;
-    //    });
-    //    ENSURES(it != stdr::cend(buffer_mapper));
-
-    //    return *it->value;
-    // }
-
-    // /////////////////////////////////////
-    // /////////////////////////////////////
-    // inline auto Frame::FrameResources::get_image(std::string_view name) noexcept -> const gpu::Image& {
-    //     EXPECTS(not stdr::empty(name));
-
-    //    auto it = stdr::find_if(image_mapper, [name = hash(name)](const auto& mapping) noexcept { return mapping.name == name;
-    //    }); ENSURES(it != stdr::cend(image_mapper));
-
-    //    return *it->value;
-    // }
-
-    // /////////////////////////////////////
-    // /////////////////////////////////////
-    // inline auto Frame::FrameResources::get_image_view(std::string_view name) noexcept -> const gpu::ImageView& {
-    //     EXPECTS(not stdr::empty(name));
-
-    //    auto it = stdr::find_if(view_mapper, [name = hash(name)](const auto& mapping) noexcept { return mapping.name == name;
-    //    }); ENSURES(it != stdr::cend(view_mapper));
-
-    //    return *it->value;
-    // }
-
-    // /////////////////////////////////////
-    // /////////////////////////////////////
-    // STORMKIT_FORCE_INLINE
-    // constexpr Frame::Frame() noexcept = default;
-
-    // /////////////////////////////////////
-    // /////////////////////////////////////
-    // STORMKIT_FORCE_INLINE
-    // inline Frame::~Frame() noexcept = default;
-
-    // /////////////////////////////////////
-    // /////////////////////////////////////
-    // STORMKIT_FORCE_INLINE
-    // inline Frame::Frame(Frame&&) noexcept = default;
-
-    // /////////////////////////////////////
-    // /////////////////////////////////////
-    // STORMKIT_FORCE_INLINE
-    // inline auto Frame::operator=(Frame&&) noexcept -> Frame& = default;
-
-    // /////////////////////////////////////
-    // /////////////////////////////////////
-    // inline auto Frame::execute(const gpu::Queue& queue) noexcept -> gpu::Expected<Ref<const gpu::Semaphore>> {
-    //     Try(m_cmb->submit(queue, {}, {}, as_refs<std::array>(m_semaphore), as_ref(m_fence)));
-    //     Return as_ref(m_semaphore);
-    // }
-
-    // /////////////////////////////////////
-    // /////////////////////////////////////
-    // STORMKIT_FORCE_INLINE
-    // inline auto Frame::backbuffer() const noexcept -> const gpu::Image& {
-    //     EXPECTS(m_backbuffer != nullptr);
-    //     return *m_backbuffer;
-    // }
-
-    // /////////////////////////////////////
-    // /////////////////////////////////////
-    // STORMKIT_FORCE_INLINE
-    // inline auto Frame::fence(this auto& self) noexcept -> decltype(auto) {
-    //     EXPECTS(self.m_fence.initialized());
-    //     return *self.m_fence;
-    // }
-
     /////////////////////////////////////
     /////////////////////////////////////
     STORMKIT_FORCE_INLINE
@@ -426,6 +281,7 @@ namespace stormkit::engine {
         m_task.attachments |= image_id;
         m_task.reads |= image_id;
         node.read_by |= m_task.id;
+        node.attached_in |= m_task.id;
     }
 
     /////////////////////////////////////
@@ -442,6 +298,7 @@ namespace stormkit::engine {
         m_task.attachments |= image_id;
         m_task.writes |= image_id;
         node.wrote_by |= m_task.id;
+        node.attached_in |= m_task.id;
     }
 
     /////////////////////////////////////
@@ -525,29 +382,73 @@ namespace stormkit::engine {
         m_backbuffer_id = id;
     }
 
-    // /////////////////////////////////////
-    // /////////////////////////////////////
-    // STORMKIT_FORCE_INLINE
-    // inline auto FrameBuilder::baked() const noexcept -> bool {
-    //     return m_baked_graph.has_value();
-    // }
-
-    // /////////////////////////////////////
-    // /////////////////////////////////////
-    // STORMKIT_FORCE_INLINE
-    // inline auto FrameBuilder::hash() const noexcept -> hash32 {
-    //     EXPECTS(baked());
-
-    //    return m_hash;
-    // }
+    /////////////////////////////////////
+    /////////////////////////////////////
+    STORMKIT_FORCE_INLINE
+    inline auto FrameBuilder::tasks() const noexcept -> const Tasks& {
+        return m_tasks;
+    }
 
     /////////////////////////////////////
     /////////////////////////////////////
-    // STORMKIT_FORCE_INLINE
-    // inline auto operator==(const FrameBuilder::Task& first, const FrameBuilder::Task& second) noexcept -> bool {
-    //     const auto& first_name  = std::visit([](const auto& description) static noexcept { return description.name; }, first);
-    //     const auto& second_name = std::visit([](const auto& description) static noexcept { return description.name; }, second);
+    STORMKIT_FORCE_INLINE
+    inline auto FrameBuilder::resources() const noexcept -> const Resources& {
+        return m_resources;
+    }
 
-    //    return first_name == second_name;
-    // }
+    /////////////////////////////////////
+    /////////////////////////////////////
+    STORMKIT_FORCE_INLINE
+    inline FrameResourcesAccessor::FrameResourcesAccessor(const Images&     images,
+                                                          const ImageViews& image_views,
+                                                          const Buffers&    buffers) noexcept
+        : m_images { images }, m_image_views { image_views }, m_buffers { buffers } {
+    }
+
+    /////////////////////////////////////
+    /////////////////////////////////////
+    STORMKIT_FORCE_INLINE
+    inline FrameResourcesAccessor::~FrameResourcesAccessor() noexcept = default;
+
+    // /////////////////////////////////////
+    // /////////////////////////////////////
+    // STORMKIT_FORCE_INLINE
+    // inline FrameResourcesAccessor::FrameResourcesAccessor(FrameResourcesAccessor&&) noexcept = default;
+
+    // /////////////////////////////////////
+    // /////////////////////////////////////
+    // STORMKIT_FORCE_INLINE
+    // inline auto FrameResourcesAccessor::operator=(FrameResourcesAccessor&&) noexcept -> FrameResourcesAccessor& = default;
+
+    /////////////////////////////////////
+    /////////////////////////////////////
+    STORMKIT_FORCE_INLINE
+    inline auto FrameResourcesAccessor::get_image(const FrameBuilder::ResourceID& id) const noexcept -> const gpu::Image& {
+        const auto it = stdr::find_if(m_images, [&id](const auto& pair) noexcept { return pair.first == id; });
+        ENSURES(it != stdr::cend(m_images));
+
+        return *it->second;
+    }
+
+    /////////////////////////////////////
+    /////////////////////////////////////
+    STORMKIT_FORCE_INLINE
+    inline auto FrameResourcesAccessor::get_image_view(const FrameBuilder::CombinedID& id) const noexcept
+      -> const gpu::ImageView& {
+        const auto it = stdr::find_if(m_image_views, [&id](const auto& pair) noexcept { return pair.first == id; });
+        ENSURES(it != stdr::cend(m_image_views));
+
+        return it->second;
+    }
+
+    /////////////////////////////////////
+    /////////////////////////////////////
+    STORMKIT_FORCE_INLINE
+    inline auto FrameResourcesAccessor::get_buffer(const FrameBuilder::ResourceID& id) const noexcept -> const gpu::Buffer& {
+        const auto it = stdr::find_if(m_buffers, [&id](const auto& pair) noexcept { return pair.first == id; });
+        ENSURES(it != stdr::cend(m_buffers));
+
+        return *it->second;
+    }
+
 } // namespace stormkit::engine
