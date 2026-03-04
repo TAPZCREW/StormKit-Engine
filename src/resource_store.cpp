@@ -30,16 +30,15 @@ namespace stormkit::engine {
         auto image = image::Image {};
         TryAssert(image.load_from_file(path), std::format("Failed to load image {}, reason: ", path.string()));
 
-        auto&& [_, texture] = m_textures
-                                .emplace(id,
-                                         TryAssert(gpu::Image::create(m_device,
-                                                                      {
-                                                                        .extent = image.extent(),
-                                                                        .format = gpu::from_image(image.format()),
-                                                                        .usages = gpu::ImageUsageFlag::SAMPLED
-                                                                                  | gpu::ImageUsageFlag::TRANSFER_DST,
-                                                                      }),
-                                                   std::format("Failed to allocate gpu resources for image {}", path.string())));
+        m_textures
+          .emplace(id,
+                   TryAssert(gpu::Image::create(m_device,
+                                                {
+                                                  .extent = image.extent(),
+                                                  .format = gpu::from_image(image.format()),
+                                                  .usages = gpu::ImageUsageFlag::SAMPLED | gpu::ImageUsageFlag::TRANSFER_DST,
+                                                }),
+                             std::format("Failed to allocate gpu resources for image {}", path.string())));
 
         return id;
     }

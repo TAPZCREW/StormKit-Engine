@@ -70,7 +70,6 @@ namespace stormkit::engine {
         auto& submission_resources = m_submission_resources[m_current_frame];
 
         const auto& image_available = submission_resources.image_available;
-        const auto& render_finished = submission_resources.render_finished;
         auto&       in_flight       = submission_resources.in_flight;
 
         TryAssert(in_flight.wait(), std::format("Failed to wait for in flight {} fence", m_current_frame));

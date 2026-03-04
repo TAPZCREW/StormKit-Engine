@@ -45,6 +45,8 @@ export namespace stormkit::engine {
         static auto allocate(Application& application, const math::fextent2& viewport) noexcept
           -> gpu::Expected<Heap<BidimPipeline>>;
 
+        auto init_ecs(Application& application) -> void;
+
         auto update_framegraph(const Renderer& renderer, FrameBuilder& graph) noexcept -> void;
 
       private:
@@ -99,30 +101,13 @@ namespace stormkit::engine {
 
     //////////////////////////////////////
     //////////////////////////////////////
-    inline BidimPipeline::BidimPipeline(BidimPipeline&& other) noexcept
-        : m_render_data { std::move(other.m_render_data) },
-          m_viewport { std::move(other.m_viewport) },
-          m_projection_matrix { std::move(other.m_projection_matrix) } {
-        auto from = other.m_sprites.write();
-
-        m_sprites.assign(std::move(*from));
-    }
+    STORMKIT_FORCE_INLINE
+    inline BidimPipeline::BidimPipeline(BidimPipeline&& other) noexcept = default;
 
     //////////////////////////////////////
     //////////////////////////////////////
-    inline auto BidimPipeline::operator=(BidimPipeline&& other) noexcept -> BidimPipeline& {
-        if (&other == this) [[unlikely]]
-            return *this;
-
-        m_render_data       = std::move(other.m_render_data);
-        m_viewport          = std::move(other.m_viewport);
-        m_projection_matrix = std::move(other.m_projection_matrix);
-
-        auto from = other.m_sprites.write();
-
-        m_sprites.assign(std::move(*from));
-        return *this;
-    }
+    STORMKIT_FORCE_INLINE
+    inline auto BidimPipeline::operator=(BidimPipeline&& other) noexcept -> BidimPipeline& = default;
 
     //////////////////////////////////////
     //////////////////////////////////////

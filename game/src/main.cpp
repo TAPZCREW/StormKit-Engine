@@ -35,6 +35,7 @@ auto main(std::span<const std::string_view> args) -> int {
     application.set_frame_builder(bind_front(&engine::BidimPipeline::update_framegraph,
                                              &render_pipeline,
                                              std::ref(application.renderer())));
+    render_pipeline.init_ecs(application);
 
     application.run(BOOT_LUA);
 

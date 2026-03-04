@@ -149,8 +149,7 @@ namespace stormkit::engine {
 
     /////////////////////////////////////
     /////////////////////////////////////
-    auto Renderer::thread_loop(std::mutex& frame_builder_mutex, std::atomic_bool& window_is_open, std::stop_token token) noexcept
-      -> void {
+    auto Renderer::thread_loop(std::atomic_bool& window_is_open, std::stop_token token) noexcept -> void {
         set_current_thread_name("StormKit:RenderThread");
 
         m_command_buffers = TryAssert(m_main_command_pool->create_command_buffers(m_surface->buffering_count()),
@@ -162,7 +161,7 @@ namespace stormkit::engine {
             if (token.stop_requested()) break;
             if (window_is_open) {
                 auto frame = TryAssert(m_surface->begin_frame(*m_device), "Failed to start frame!");
-                TryAssert(do_render(frame_builder_mutex, frame), "Failed to render frame!");
+                TryAssert(do_render(frame), "Failed to render frame!");
                 TryAssert(m_surface->present_frame(m_raster_queue, frame), "Failed to present frame!");
             }
         }
@@ -172,18 +171,42 @@ namespace stormkit::engine {
 
     /////////////////////////////////////
     /////////////////////////////////////
-    auto Renderer::do_render(std::mutex& frame_builder_mutex, RenderSurface::Frame& frame) noexcept -> gpu::Expected<void> {
-        EXPECTS(m_frame.has_backbuffer());
+    auto Renderer::do_render(RenderSurface::Frame& frame) noexcept -> gpu::Expected<void> {
+        // handle empty graph
         {
-            auto _ = std::unique_lock { frame_builder_mutex };
+            auto frame_builders = m_frame_builders.read();
+            if (frame_builders->empty()) {
+                auto& blit_cmb = m_command_buffers[frame.current_frame];
 
-            auto old                               = std::move(m_frame_resources[frame.current_frame]);
-            m_frame_resources[frame.current_frame] = realize_frame(frame);
+                Try(blit_cmb.reset());
+                Try(blit_cmb.begin(true));
+                Try(blit_cmb.end());
 
-            if (old.initialized())
-                if (not(old->fence.status() == gpu::Fence::Status::SIGNALED))
-                    TryAssert(old->fence.wait(), std::format("Failed to wait on old frame {} fence!", frame.current_frame));
+                auto wait       = as_refs<std::array>(frame.submission_resources->image_available);
+                auto stage_mask = std::array { gpu::PipelineStageFlag::COLOR_ATTACHMENT_OUTPUT };
+                auto signal     = as_refs<std::array>(frame.submission_resources->render_finished);
+
+                TryAssert(blit_cmb
+                            .submit(m_raster_queue, wait, stage_mask, signal, as_ref(frame.submission_resources->in_flight)),
+                          std::format("Failed to submit frame {} blit command buffer!", frame.current_frame));
+
+                Return {};
+            }
         }
+
+        auto frame_builder = FrameBuilder {};
+        {
+            auto frame_builders = m_frame_builders.write();
+            frame_builder       = std::move(frame_builders->front());
+            frame_builders->pop();
+        }
+
+        auto old                               = std::move(m_frame_resources[frame.current_frame]);
+        m_frame_resources[frame.current_frame] = realize_frame(frame_builder);
+
+        if (old.initialized())
+            if (not(old->fence.status() == gpu::Fence::Status::SIGNALED))
+                TryAssert(old->fence.wait(), std::format("Failed to wait on old frame {} fence!", frame.current_frame));
 
         auto&       frame_resources = m_frame_resources[frame.current_frame];
         const auto& present_image   = m_surface->images()[frame.image_index];
@@ -230,15 +253,9 @@ namespace stormkit::engine {
 
     /////////////////////////////////////
     /////////////////////////////////////
-    auto Renderer::realize_frame(RenderSurface::Frame&) noexcept -> FrameResources {
-        if (m_dump_next_graph) {
-            ilog("{}", m_frame.dump());
-
-            m_dump_next_graph = false;
-        }
-
-        const auto& tasks     = m_frame.tasks();
-        const auto& resources = m_frame.resources();
+    auto Renderer::realize_frame(const FrameBuilder& frame_builder) noexcept -> FrameResources {
+        const auto& tasks     = frame_builder.tasks();
+        const auto& resources = frame_builder.resources();
 
         auto dag = DAG<std::optional<FrameBuilder::TaskID>> { stdr::size(resources) + stdr::size(tasks) };
 
@@ -261,7 +278,7 @@ namespace stormkit::engine {
 
         auto result = dag.topological_sort();
         if (not result) {
-            TryAssert(io::write_text("./dag.dot", m_frame.dump()), "Failed to write dag.dot!");
+            TryAssert(io::write_text("./dag.dot", frame_builder.dump()), "Failed to write dag.dot!");
             ensures(false, std::format("Cycles detected in frame graph {}", result.error()));
         }
 
@@ -299,8 +316,9 @@ namespace stormkit::engine {
                              frame_resources.created_buffers
                                .emplace_back(resource.id, m_frame_resource_cache->get_or_create_buffer(create_info));
                          },
-                         [&frame_resources, &resource, &map, this](const Ref<const gpu::Image>& retained_image) noexcept {
-                             const auto& [id, image] = frame_resources.images.emplace_back(resource.id, as_ref(retained_image));
+                         [&frame_resources, &resource, &map, this](const Ref<gpu::Image>& retained_image) noexcept {
+                             const auto& [id,
+                                          image] = frame_resources.images.emplace_back(resource.id, as_ref_mut(retained_image));
                              if (not resource.attached_in.none()) {
                                  for (const auto& [task_id, _] : map) {
                                      if ((resource.attached_in & task_id) == task_id) {
@@ -315,26 +333,27 @@ namespace stormkit::engine {
                                  }
                              }
                          },
-                         [&frame_resources, &resource](const Ref<const gpu::Buffer>& retained_buffer) noexcept {
-                             frame_resources.buffers.emplace_back(resource.id, as_ref(retained_buffer));
+                         [&frame_resources, &resource](const Ref<gpu::Buffer>& retained_buffer) noexcept {
+                             frame_resources.buffers.emplace_back(resource.id, as_ref_mut(retained_buffer));
                          },
                          [](auto&&) static noexcept {},
                        },
                        resource.data);
         }
-        merge(frame_resources.images, frame_resources.created_images | stdv::transform([](const auto& pair) static noexcept {
-                                          return std::make_pair(pair.first, as_ref(pair.second));
+        merge(frame_resources.images, frame_resources.created_images | stdv::transform([](auto& pair) static noexcept {
+                                          return std::make_pair(pair.first, as_ref_mut(pair.second));
                                       }) | stdv::as_rvalue);
 
-        merge(frame_resources.buffers, frame_resources.created_buffers | stdv::transform([](const auto& pair) static noexcept {
-                                           return std::make_pair(pair.first, as_ref(pair.second));
+        merge(frame_resources.buffers, frame_resources.created_buffers | stdv::transform([](auto& pair) static noexcept {
+                                           return std::make_pair(pair.first, as_ref_mut(pair.second));
                                        }) | stdv::as_rvalue);
 
-        auto roots = tasks | stdv::filter([](const auto& pair) static noexcept { return pair.second.root; });
+        // auto roots = tasks | stdv::filter([](const auto& pair) static noexcept { return pair.second.root; });
 
         auto& main_cmb = frame_resources.main_cmb;
         TryAssert(main_cmb.begin(true), "Failed to record main frame command buffer!");
         for (const auto& task_id : ordered_tasks) {
+            std::println("TASK {}", task_id.to_string());
             const auto& [_,
                          task] = *stdr::find_if(tasks, [&task_id](const auto& pair) noexcept { return pair.first == task_id; });
 
@@ -342,9 +361,9 @@ namespace stormkit::engine {
               .cmb = TryAssert(m_main_command_pool->create_command_buffer(gpu::CommandBufferLevel::SECONDARY),
                                std::format("Failed to allocate frame pass {} command buffer!", task.name)) });
 
-            const auto accessor = FrameResourcesAccessor { frame_resources.images,
-                                                           frame_resources.image_views,
-                                                           frame_resources.buffers };
+            auto accessor = FrameResourcesAccessor { frame_resources.images,
+                                                     frame_resources.image_views,
+                                                     frame_resources.buffers };
 
             main_cmb.begin_debug_region(std::format("StormKit:frame:{}", task.name));
             switch (task.type) {
@@ -359,7 +378,7 @@ namespace stormkit::engine {
                     for (auto& [image_id, image] : frame_resources.images) {
                         if (not((image_id & task.attachments) == image_id)) continue;
 
-                        if (image_id == m_frame.backbuffer()) frame_resources.backbuffer = as_opt_ref(image);
+                        if (image_id == frame_builder.backbuffer()) frame_resources.backbuffer = as_opt_ref(image);
 
                         const auto read  = (image_id & task.reads) == image_id;
                         const auto write = (image_id & task.writes) == image_id;
@@ -418,19 +437,24 @@ namespace stormkit::engine {
                     main_cmb.end_debug_region();
 
                     TryAssert(pass.cmb.begin(true, inheritance_info),
-                              std::format("Failed to record pass {} command buffer!", task.name));
-                    task.execute(accessor, pass.cmb);
+                              std::format("Failed to record raster pass {} command buffer!", task.name));
+                    task.execute(accessor, pass.cmb, task.data);
                     TryAssert(pass.cmb.end(), std::format("Failed to end pass {} command buffer!", task.name));
                     main_cmb.begin_rendering(rendering_info, true)
                       .execute_sub_command_buffers(into_array(as_ref(pass.cmb)))
                       .end_rendering();
                 } break;
                 case FrameBuilder::Task::Type::COMPUTE: {
-                    task.execute(accessor, pass.cmb);
+                    TryAssert(pass.cmb.begin(true), std::format("Failed to record compute pass {} command buffer!", task.name));
+                    task.execute(accessor, pass.cmb, task.data);
+                    TryAssert(pass.cmb.end(), std::format("Failed to end pass {} command buffer!", task.name));
                     main_cmb.execute_sub_command_buffers(into_array(as_ref(pass.cmb)));
                 } break;
                 case FrameBuilder::Task::Type::TRANSFER: {
-                    task.execute(accessor, pass.cmb);
+                    std::println("TRANSFER TASK");
+                    TryAssert(pass.cmb.begin(true), std::format("Failed to record transfer pass {} command buffer!", task.name));
+                    task.execute(accessor, pass.cmb, task.data);
+                    TryAssert(pass.cmb.end(), std::format("Failed to end pass {} command buffer!", task.name));
                     main_cmb.execute_sub_command_buffers(into_array(as_ref(pass.cmb)));
                 } break;
                 case FrameBuilder::Task::Type::RAYTRACING: {
@@ -442,6 +466,8 @@ namespace stormkit::engine {
         }
 
         TryAssert(main_cmb.end(), "Failed to end main frame command buffer!");
+
+        // std::exit(-1);
 
         return frame_resources;
     }

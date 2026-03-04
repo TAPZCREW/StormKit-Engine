@@ -102,7 +102,6 @@ namespace stormkit::engine {
     //////////////////////////////////////
     auto BidimPipeline::do_init(Application& application) noexcept -> gpu::Expected<void> {
         const auto& renderer = application.renderer();
-        auto&       world    = application.world();
         const auto& device   = renderer.device();
 
         m_render_data.vertex_shader = Try(gpu::Shader::load_from_bytes(device, QUAD_SPRITE_SHADER, gpu::ShaderStageFlag::VERTEX));
@@ -145,13 +144,21 @@ namespace stormkit::engine {
                                                            m_render_data.pipeline_state,
                                                            m_render_data.pipeline_layout,
                                                            rendering_info));
+        Return {};
+    }
+
+    //////////////////////////////////////
+    //////////////////////////////////////
+    auto BidimPipeline::init_ecs(Application& application) -> void {
+        const auto& renderer = application.renderer();
+        auto&       world    = application.world();
+
         world.add_system("StormKit:sprite_render_system",
                          { bidim::StaticSpriteComponent::type() },
                          {
                            .update              = monadic::noop(),
                            .on_message_received = bind_front(&BidimPipeline::on_message_received, this, std::ref(renderer)),
                          });
-        Return {};
     }
 
     //////////////////////////////////////
@@ -175,60 +182,83 @@ namespace stormkit::engine {
                                                                .property = gpu::MemoryPropertyFlag::DEVICE_LOCAL,
                                                              }),
                                          "Failed to allocate vertex gpu buffer");
-            should_upload    = true;
+            std::println("SHOULD UPLOAD!");
+            should_upload = true;
         }
 
         const auto vertex_buffer_id = graph.retain_buffer(VERTEX_BUFFER_NAME, *m_render_data.vertex_buffer);
 
         if (should_upload) {
-            auto staging_buffer_id = FrameBuilder::ResourceID {};
-            graph.add_transfer_task(
+            struct UpdateVertexTaskData {
+                FrameBuilder::ResourceID staging_buffer_id = {};
+                FrameBuilder::ResourceID vertex_buffer_id  = {};
+            };
+
+            graph.add_transfer_task<UpdateVertexTaskData>(
               UPDATE_VERTEX_TASK_NAME,
-              [&](auto& builder) noexcept {
-                  staging_buffer_id = builder.create_buffer(STAGING_BUFFER_NAME,
-                                                            {
-                                                              .usages = gpu::BufferUsageFlag::TRANSFER_SRC,
-                                                              .size   = SPRITE_VERTEX_BUFFER_SIZE,
-                                                            });
+              [&](auto& builder, auto& data) mutable noexcept {
+                  data.staging_buffer_id = builder.create_buffer(STAGING_BUFFER_NAME,
+                                                                 {
+                                                                   .usages = gpu::BufferUsageFlag::TRANSFER_SRC,
+                                                                   .size   = SPRITE_VERTEX_BUFFER_SIZE,
+                                                                 });
+                  data.vertex_buffer_id  = vertex_buffer_id;
 
-                  builder.write_buffer(vertex_buffer_id);
-                  builder.write_buffer(staging_buffer_id);
+                  builder.write_buffer(data.vertex_buffer_id);
+                  builder.write_buffer(data.staging_buffer_id);
+
+                  std::println("UPLOAD SETUP");
               },
-              [staging_buffer_id, this](auto& frame_resources, auto& cmb) noexcept {
-                  const auto& staging_buffer = frame_resources.get_buffer(staging_buffer_id);
-                  // staging_buffer.upload();
+              [](auto& frame_resources, auto& cmb, const auto& data) static noexcept {
+                  std::println("UPLOAD EXECUTE");
+                  auto&       staging_buffer = frame_resources.get_buffer(data.staging_buffer_id);
+                  const auto& vertex_buffer  = frame_resources.get_buffer(data.vertex_buffer_id);
 
-                  cmb.copy_buffer(staging_buffer, *m_render_data.vertex_buffer, SPRITE_VERTEX_BUFFER_SIZE);
+                  std::array<SpriteVertex, 4> vertices = {
+                      SpriteVertex { { 0.f, 0.f }, { 0.f, 0.f } },
+                      SpriteVertex { { 0.f, 1.f }, { 0.f, 1.f } },
+                      SpriteVertex { { 1.f, 0.f }, { 1.f, 0.f } },
+                      SpriteVertex { { 1.f, 1.f }, { 1.f, 1.f } },
+                  };
+                  staging_buffer.upload(as_bytes(vertices));
+
+                  cmb.copy_buffer(staging_buffer, vertex_buffer, SPRITE_VERTEX_BUFFER_SIZE);
               });
         }
 
-        auto backbuffer_id = FrameBuilder::ResourceID {};
-        graph.add_raster_task(
+        struct RenderSpriteTaskData {
+            FrameBuilder::ResourceID vertex_buffer_id = {};
+            FrameBuilder::ResourceID backbuffer_id    = {};
+        };
+
+        const auto& [_, render_sprite_data] = graph.add_raster_task<RenderSpriteTaskData>(
           RENDER_SPRITES_TASK_NAME,
-          [&](auto& builder) noexcept {
-              builder.read_buffer(vertex_buffer_id);
+          [&](auto& builder, auto& data) noexcept {
+              data.vertex_buffer_id = vertex_buffer_id;
+              data.backbuffer_id    = builder.create_image(BACKBUFFER_NAME,
+                                                           { .extent = m_viewport.to<u32>().to<3>(),
+                                                             .format = gpu::PixelFormat::RGBA8_UNORM,
+                                                             .layers = 1u,
+                                                             .type   = gpu::ImageType::T2D,
+                                                             .usages = gpu::ImageUsageFlag::COLOR_ATTACHMENT
+                                                                       | gpu::ImageUsageFlag::TRANSFER_SRC });
 
-              backbuffer_id = builder.create_image(BACKBUFFER_NAME,
-                                                   { .extent = m_viewport.to<u32>().to<3>(),
-                                                     .format = gpu::PixelFormat::RGBA8_UNORM,
-                                                     .layers = 1u,
-                                                     .type   = gpu::ImageType::T2D,
-                                                     .usages = gpu::ImageUsageFlag::COLOR_ATTACHMENT
-                                                               | gpu::ImageUsageFlag::TRANSFER_SRC });
-
-              builder.write_attachment(backbuffer_id, gpu::ClearColor {});
+              builder.read_buffer(data.vertex_buffer_id);
+              builder.write_attachment(data.backbuffer_id, gpu::ClearColor {});
           },
-          [this](const auto&, auto& cmb) noexcept {
-              auto buffers = as_refs(m_render_data.vertex_buffer);
+          [this](const auto& frame_resources, auto& cmb, const auto& data) noexcept {
+              const auto& vertex_buffer = frame_resources.get_buffer(data.vertex_buffer_id);
+
+              auto buffers = as_refs(vertex_buffer);
 
               cmb.bind_pipeline(m_render_data.pipeline);
               cmb.bind_vertex_buffers(buffers, std::array { 0_u64 });
-              auto access = m_sprites.read(); // CONTINUER ICI
+              auto access = m_sprites.read();
               for (const auto& _ : *access) cmb.draw(4);
           },
           FrameBuilder::ROOT);
 
-        graph.set_backbuffer(backbuffer_id);
+        graph.set_backbuffer(render_sprite_data->backbuffer_id);
     }
 
     //////////////////////////////////////

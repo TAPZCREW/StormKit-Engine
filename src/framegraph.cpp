@@ -65,7 +65,7 @@ namespace stormkit::engine {
 
     /////////////////////////////////////
     /////////////////////////////////////
-    auto FrameBuilder::retain_image(std::string name, const gpu::Image& image) noexcept -> ResourceID {
+    auto FrameBuilder::retain_image(std::string name, gpu::Image& image) noexcept -> ResourceID {
         const auto name_hash = hash(name);
         expects(not stdr::any_of(m_resources,
                                  [name_hash](const auto& node) noexcept { return node.second.name_hash == name_hash; }),
@@ -76,7 +76,7 @@ namespace stormkit::engine {
                                                       .name      = std::move(name),
                                                       .name_hash = name_hash,
                                                       .id        = m_next_resource_id,
-                                                      .data      = as_ref(image),
+                                                      .data      = as_ref_mut(image),
                                                     });
         if (m_next_resource_id.none()) m_next_resource_id |= 0b1;
         else
@@ -88,7 +88,7 @@ namespace stormkit::engine {
 
     /////////////////////////////////////
     /////////////////////////////////////
-    auto FrameBuilder::retain_buffer(std::string name, const gpu::Buffer& buffer) noexcept -> ResourceID {
+    auto FrameBuilder::retain_buffer(std::string name, gpu::Buffer& buffer) noexcept -> ResourceID {
         const auto name_hash = hash(name);
         expects(not stdr::any_of(m_resources,
                                  [name_hash](const auto& node) noexcept { return node.second.name_hash == name_hash; }),
@@ -99,11 +99,9 @@ namespace stormkit::engine {
                                                       .name      = std::move(name),
                                                       .name_hash = name_hash,
                                                       .id        = m_next_resource_id,
-                                                      .data      = as_ref(buffer),
+                                                      .data      = as_ref_mut(buffer),
                                                     });
-        if (m_next_resource_id.none()) m_next_resource_id |= 0b1;
-        else
-            m_next_resource_id <<= 1;
+        m_next_resource_id <<= 1;
         ensures(not m_next_resource_id.none(), "resource id overflow {}");
 
         return node.first;
@@ -111,11 +109,10 @@ namespace stormkit::engine {
 
     /////////////////////////////////////
     /////////////////////////////////////
-    auto FrameBuilder::add_task(std::string&&                  name,
-                                Task::Type                     type,
-                                FrameBuilder::SetupClosure&&   setup,
-                                FrameBuilder::ExecuteClosure&& execute,
-                                std::optional<Root>            root) noexcept -> TaskID {
+    auto FrameBuilder::do_add_task(std::string&&                     name,
+                                   Task::Type                        type,
+                                   FrameBuilder::RawExecuteClosure&& execute,
+                                   std::optional<Root>               root) noexcept -> Task& {
         const auto name_hash = hash(name);
         expects(not stdr::any_of(m_tasks, [name_hash](const auto& node) noexcept { return node.second.name_hash == name_hash; }),
                 std::format("task {} already present in graph", name));
@@ -129,15 +126,10 @@ namespace stormkit::engine {
                                             .execute   = std::move(execute),
                                             .root      = root != std::nullopt,
                                           });
-        if (m_next_task_id.none()) m_next_task_id |= 0b1;
-        else
-            m_next_task_id <<= 1;
+        m_next_task_id <<= 1;
         ensures(not m_next_task_id.none(), "task id overflow");
 
-        auto builder = FrameTaskBuilder { node.second, m_next_resource_id, m_next_task_id, m_resources, m_tasks };
-        std::invoke(setup, builder);
-
-        return node.first;
+        return node.second;
     }
 
     /////////////////////////////////////
@@ -166,11 +158,11 @@ namespace stormkit::engine {
             EXPECTS(not is<std::monostate>(resource.data));
 
             if (is<gpu::Image::CreateInfo>(resource.data)) return "green";
-            else if (is<gpu::Image::CreateInfo>(resource.data))
+            else if (is<gpu::Buffer::CreateInfo>(resource.data))
                 return "red";
-            else if (is<Ref<const gpu::Image>>(resource.data))
+            else if (is<Ref<gpu::Image>>(resource.data))
                 return "olive";
-            else if (is<Ref<const gpu::Buffer>>(resource.data))
+            else if (is<Ref<gpu::Buffer>>(resource.data))
                 return "pink";
 
             std::unreachable();

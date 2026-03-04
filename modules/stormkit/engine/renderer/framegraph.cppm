@@ -24,19 +24,20 @@ export namespace stormkit::engine {
 
         class FrameTaskBuilder;
 
-        using SetupClosure   = FunctionRef<void(FrameTaskBuilder&)>;
-        using ExecuteClosure = std::function<void(const FrameResourcesAccessor&, gpu::CommandBuffer&)>;
+        template<typename TaskData>
+        using SetupClosure = FunctionRef<void(FrameTaskBuilder&, TaskData&)>;
+        template<typename TaskData>
+        using ExecuteClosure = std::function<void(FrameResourcesAccessor&, gpu::CommandBuffer&, const TaskData&)>;
+
+        using RawExecuteClosure = std::function<void(FrameResourcesAccessor&, gpu::CommandBuffer&, std::span<const std::byte>)>;
 
         using ResourceID = std::bitset<32>;
         using TaskID     = std::bitset<32>;
         using CombinedID = std::bitset<64>;
 
         struct Resource {
-            using Data = std::variant<std::monostate,
-                                      gpu::Image::CreateInfo,
-                                      gpu::Buffer::CreateInfo,
-                                      Ref<const gpu::Image>,
-                                      Ref<const gpu::Buffer>>;
+            using Data = std::
+              variant<std::monostate, gpu::Image::CreateInfo, gpu::Buffer::CreateInfo, Ref<gpu::Image>, Ref<gpu::Buffer>>;
 
             std::string name;
             hash32      name_hash;
@@ -65,7 +66,9 @@ export namespace stormkit::engine {
             ResourceID reads       = {};
             ResourceID writes      = {};
 
-            ExecuteClosure execute;
+            RawExecuteClosure execute;
+
+            std::vector<std::byte> data = {};
 
             bool root = false;
         };
@@ -91,12 +94,11 @@ export namespace stormkit::engine {
             auto write_attachment(ResourceID, std::optional<gpu::ClearValue> clear_value = std::nullopt) noexcept -> void;
 
           private:
-            FrameTaskBuilder(Task&, ResourceID&, TaskID&, Resources&, Tasks&) noexcept;
+            FrameTaskBuilder(Task&, ResourceID&, Resources&, Tasks&) noexcept;
 
             Task& m_task;
 
             ResourceID& m_next_resource_id;
-            TaskID&     m_next_task_id;
 
             Resources& m_resources;
             Tasks&     m_tasks;
@@ -113,32 +115,36 @@ export namespace stormkit::engine {
         auto operator=(FrameBuilder&&) noexcept -> FrameBuilder&;
         auto operator=(const FrameBuilder&) noexcept -> FrameBuilder& = delete;
 
-        auto add_raster_task(std::string         name,
-                             SetupClosure        setup,
-                             ExecuteClosure      execute,
-                             std::optional<Root> root = std::nullopt) noexcept -> TaskID;
-        auto add_transfer_task(std::string         name,
-                               SetupClosure        setup,
-                               ExecuteClosure      execute,
-                               std::optional<Root> root = std::nullopt) noexcept -> TaskID;
-        auto add_compute_task(std::string         name,
-                              SetupClosure        setup,
-                              ExecuteClosure      execute,
-                              std::optional<Root> root = std::nullopt) noexcept -> TaskID;
-        auto add_raytracing_task(std::string         name,
-                                 SetupClosure        setup,
-                                 ExecuteClosure      execute,
-                                 std::optional<Root> root = std::nullopt) noexcept -> TaskID;
+        template<typename TaskData>
+        auto add_raster_task(std::string              name,
+                             SetupClosure<TaskData>   setup,
+                             ExecuteClosure<TaskData> execute,
+                             std::optional<Root>      root = std::nullopt) noexcept -> std::pair<TaskID, Ref<const TaskData>>;
+        template<typename TaskData>
+        auto add_transfer_task(std::string              name,
+                               SetupClosure<TaskData>   setup,
+                               ExecuteClosure<TaskData> execute,
+                               std::optional<Root>      root = std::nullopt) noexcept -> std::pair<TaskID, Ref<const TaskData>>;
+        template<typename TaskData>
+        auto add_compute_task(std::string              name,
+                              SetupClosure<TaskData>   setup,
+                              ExecuteClosure<TaskData> execute,
+                              std::optional<Root>      root = std::nullopt) noexcept -> std::pair<TaskID, Ref<const TaskData>>;
+        template<typename TaskData>
+        auto add_raytracing_task(std::string              name,
+                                 SetupClosure<TaskData>   setup,
+                                 ExecuteClosure<TaskData> execute,
+                                 std::optional<Root>      root = std::nullopt) noexcept -> std::pair<TaskID, Ref<const TaskData>>;
 
         [[nodiscard]]
-        auto retain_buffer(std::string name, const gpu::Buffer& buffer) noexcept -> ResourceID;
+        auto retain_buffer(std::string name, gpu::Buffer& buffer) noexcept -> ResourceID;
         [[nodiscard]]
-        auto retain_image(std::string name, const gpu::Image& image) noexcept -> ResourceID;
+        auto retain_image(std::string name, gpu::Image& image) noexcept -> ResourceID;
 
         [[nodiscard]]
-        auto has_backbuffer() noexcept -> bool;
+        auto has_backbuffer() const noexcept -> bool;
         [[nodiscard]]
-        auto backbuffer() noexcept -> ResourceID;
+        auto backbuffer() const noexcept -> ResourceID;
         auto set_backbuffer(ResourceID id) noexcept -> void;
 
         [[nodiscard]]
@@ -150,8 +156,15 @@ export namespace stormkit::engine {
         auto resources() const noexcept -> const Resources&;
 
       private:
+        template<typename TaskData>
         [[nodiscard]]
-        auto add_task(std::string&&, Task::Type, SetupClosure&&, ExecuteClosure&&, std::optional<Root>) noexcept -> TaskID;
+        auto add_task(std::string&&,
+                      Task::Type,
+                      SetupClosure<TaskData>&&,
+                      ExecuteClosure<TaskData>&&,
+                      std::optional<Root>) noexcept -> std::pair<TaskID, Ref<const TaskData>>;
+        [[nodiscard]]
+        auto do_add_task(std::string&&, Task::Type, RawExecuteClosure&&, std::optional<Root>) noexcept -> Task&;
 
         ResourceID m_next_resource_id = { 1 };
         TaskID     m_next_task_id     = { 1 };
@@ -164,11 +177,11 @@ export namespace stormkit::engine {
 
     class FrameResourcesAccessor {
       public:
-        using Images     = std::vector<std::pair<engine::FrameBuilder::ResourceID, Ref<const gpu::Image>>>;
-        using ImageViews = std::vector<std::pair<engine::FrameBuilder::CombinedID, gpu::ImageView>>;
-        using Buffers    = std::vector<std::pair<engine::FrameBuilder::ResourceID, Ref<const gpu::Buffer>>>;
+        using Images     = std::vector<std::pair<engine::FrameBuilder::ResourceID, Ref<gpu::Image>>>;
+        using ImageViews = std::span<std::pair<engine::FrameBuilder::CombinedID, gpu::ImageView>>;
+        using Buffers    = std::vector<std::pair<engine::FrameBuilder::ResourceID, Ref<gpu::Buffer>>>;
 
-        FrameResourcesAccessor(const Images& images, const ImageViews& image_views, const Buffers& buffers) noexcept;
+        FrameResourcesAccessor(const Images& images, ImageViews&& image_views, const Buffers& buffers) noexcept;
         ~FrameResourcesAccessor() noexcept;
 
         FrameResourcesAccessor(const FrameResourcesAccessor&)                    = delete;
@@ -177,14 +190,25 @@ export namespace stormkit::engine {
         FrameResourcesAccessor(FrameResourcesAccessor&&) noexcept                    = delete;
         auto operator=(FrameResourcesAccessor&&) noexcept -> FrameResourcesAccessor& = delete;
 
-        auto get_image(const FrameBuilder::ResourceID& id) const noexcept -> const gpu::Image&;
-        auto get_image_view(const FrameBuilder::CombinedID& id) const noexcept -> const gpu::ImageView&;
-        auto get_buffer(const FrameBuilder::ResourceID& id) const noexcept -> const gpu::Buffer&;
+        template<typename Self>
+        auto get_image(this Self& self, const FrameBuilder::ResourceID& id) noexcept -> meta::ForwardConst<Self, gpu::Image>&;
+        template<typename Self>
+        auto get_image_view(this Self& self, const FrameBuilder::CombinedID& id) noexcept
+          -> meta::ForwardConst<Self, gpu::ImageView>&;
+        template<typename Self>
+        auto get_buffer(this Self& self, const FrameBuilder::ResourceID& id) noexcept -> meta::ForwardConst<Self, gpu::Buffer>&;
+
+        // auto get_image(const FrameBuilder::ResourceID& id) noexcept -> gpu::Image&;
+        // auto get_image_view(const FrameBuilder::CombinedID& id) noexcept -> gpu::ImageView&;
+        // auto get_buffer(const FrameBuilder::ResourceID& id) noexcept -> gpu::Buffer&;
+        // auto get_image(const FrameBuilder::ResourceID& id) const noexcept -> const gpu::Image&;
+        // auto get_image_view(const FrameBuilder::CombinedID& id) const noexcept -> const gpu::ImageView&;
+        // auto get_buffer(const FrameBuilder::ResourceID& id) const noexcept -> const gpu::Buffer&;
 
       private:
-        const Images&     m_images;
-        const Buffers&    m_buffers;
-        const ImageViews& m_image_views;
+        const Images&    m_images;
+        const Buffers&   m_buffers;
+        const ImageViews m_image_views;
     };
 
 } // namespace stormkit::engine
@@ -202,14 +226,9 @@ namespace stormkit::engine {
     STORMKIT_FORCE_INLINE
     inline FrameBuilder::FrameTaskBuilder::FrameTaskBuilder(Task&       task,
                                                             ResourceID& next_resource_id,
-                                                            TaskID&     next_task_id,
                                                             Resources&  resources,
                                                             Tasks&      tasks) noexcept
-        : m_task { task },
-          m_next_resource_id { next_resource_id },
-          m_next_task_id { next_task_id },
-          m_resources { resources },
-          m_tasks { tasks } {
+        : m_task { task }, m_next_resource_id { next_resource_id }, m_resources { resources }, m_tasks { tasks } {
     }
 
     /////////////////////////////////////
@@ -220,7 +239,7 @@ namespace stormkit::engine {
 
         auto& [_, node] = *it;
 
-        EXPECTS(is<gpu::Buffer::CreateInfo>(node.data) or is<Ref<const gpu::Buffer>>(node.data));
+        EXPECTS(is<gpu::Buffer::CreateInfo>(node.data) or is<Ref<gpu::Buffer>>(node.data));
 
         m_task.reads |= buffer_id;
         node.read_by |= m_task.id;
@@ -234,7 +253,7 @@ namespace stormkit::engine {
 
         auto& [_, node] = *it;
 
-        EXPECTS(is<gpu::Buffer::CreateInfo>(node.data) or is<Ref<const gpu::Buffer>>(node.data));
+        EXPECTS(is<gpu::Buffer::CreateInfo>(node.data) or is<Ref<gpu::Buffer>>(node.data));
 
         m_task.writes |= buffer_id;
         node.wrote_by |= m_task.id;
@@ -248,7 +267,7 @@ namespace stormkit::engine {
 
         auto& [_, node] = *it;
 
-        EXPECTS(is<gpu::Image::CreateInfo>(node.data) or is<Ref<const gpu::Image>>(node.data));
+        EXPECTS(is<gpu::Image::CreateInfo>(node.data) or is<Ref<gpu::Image>>(node.data));
 
         m_task.reads |= image_id;
         node.read_by |= m_task.id;
@@ -262,7 +281,7 @@ namespace stormkit::engine {
 
         auto& [_, node] = *it;
 
-        EXPECTS(is<gpu::Image::CreateInfo>(node.data) or is<Ref<const gpu::Image>>(node.data));
+        EXPECTS(is<gpu::Image::CreateInfo>(node.data) or is<Ref<gpu::Image>>(node.data));
 
         m_task.writes |= image_id;
         node.wrote_by |= m_task.id;
@@ -276,7 +295,7 @@ namespace stormkit::engine {
 
         auto& [_, node] = *it;
 
-        EXPECTS(is<gpu::Image::CreateInfo>(node.data) or is<Ref<const gpu::Image>>(node.data));
+        EXPECTS(is<gpu::Image::CreateInfo>(node.data) or is<Ref<gpu::Image>>(node.data));
 
         m_task.attachments |= image_id;
         m_task.reads |= image_id;
@@ -293,7 +312,7 @@ namespace stormkit::engine {
 
         auto& [_, node] = *it;
 
-        EXPECTS(is<gpu::Image::CreateInfo>(node.data) or is<Ref<const gpu::Image>>(node.data));
+        EXPECTS(is<gpu::Image::CreateInfo>(node.data) or is<Ref<gpu::Image>>(node.data));
 
         m_task.attachments |= image_id;
         m_task.writes |= image_id;
@@ -323,55 +342,59 @@ namespace stormkit::engine {
 
     /////////////////////////////////////
     /////////////////////////////////////
+    template<typename TaskData>
     STORMKIT_FORCE_INLINE
-    inline auto FrameBuilder::add_raster_task(std::string                  name,
-                                              FrameBuilder::SetupClosure   setup,
-                                              FrameBuilder::ExecuteClosure execute,
-                                              std::optional<Root>          root) noexcept -> TaskID {
-        return add_task(std::move(name), Task::Type::RASTER, std::move(setup), std::move(execute), std::move(root));
+    inline auto FrameBuilder::add_raster_task(std::string              name,
+                                              SetupClosure<TaskData>   setup,
+                                              ExecuteClosure<TaskData> execute,
+                                              std::optional<Root>      root) noexcept -> std::pair<TaskID, Ref<const TaskData>> {
+        return add_task<TaskData>(std::move(name), Task::Type::RASTER, std::move(setup), std::move(execute), std::move(root));
+    }
+
+    /////////////////////////////////////
+    /////////////////////////////////////
+    template<typename TaskData>
+    STORMKIT_FORCE_INLINE
+    inline auto FrameBuilder::add_transfer_task(std::string              name,
+                                                SetupClosure<TaskData>   setup,
+                                                ExecuteClosure<TaskData> execute,
+                                                std::optional<Root> root) noexcept -> std::pair<TaskID, Ref<const TaskData>> {
+        return add_task<TaskData>(std::move(name), Task::Type::TRANSFER, std::move(setup), std::move(execute), std::move(root));
+    }
+
+    /////////////////////////////////////
+    /////////////////////////////////////
+    template<typename TaskData>
+    STORMKIT_FORCE_INLINE
+    inline auto FrameBuilder::add_compute_task(std::string              name,
+                                               SetupClosure<TaskData>   setup,
+                                               ExecuteClosure<TaskData> execute,
+                                               std::optional<Root>      root) noexcept -> std::pair<TaskID, Ref<const TaskData>> {
+        return add_task<TaskData>(std::move(name), Task::Type::COMPUTE, std::move(setup), std::move(execute), std::move(root));
+    }
+
+    /////////////////////////////////////
+    /////////////////////////////////////
+    template<typename TaskData>
+    STORMKIT_FORCE_INLINE
+    inline auto FrameBuilder::add_raytracing_task(std::string              name,
+                                                  SetupClosure<TaskData>   setup,
+                                                  ExecuteClosure<TaskData> execute,
+                                                  std::optional<Root> root) noexcept -> std::pair<TaskID, Ref<const TaskData>> {
+        return add_task<TaskData>(std::move(name), Task::Type::RAYTRACING, std::move(setup), std::move(execute), std::move(root));
     }
 
     /////////////////////////////////////
     /////////////////////////////////////
     STORMKIT_FORCE_INLINE
-    inline auto FrameBuilder::add_transfer_task(std::string                  name,
-                                                FrameBuilder::SetupClosure   setup,
-                                                FrameBuilder::ExecuteClosure execute,
-                                                std::optional<Root>          root) noexcept -> TaskID {
-        return add_task(std::move(name), Task::Type::TRANSFER, std::move(setup), std::move(execute), std::move(root));
-    }
-
-    /////////////////////////////////////
-    /////////////////////////////////////
-    STORMKIT_FORCE_INLINE
-    inline auto FrameBuilder::add_compute_task(std::string                  name,
-                                               FrameBuilder::SetupClosure   setup,
-                                               FrameBuilder::ExecuteClosure execute,
-                                               std::optional<Root>          root) noexcept -> TaskID {
-        return add_task(std::move(name), Task::Type::COMPUTE, std::move(setup), std::move(execute), std::move(root));
-    }
-
-    /////////////////////////////////////
-    /////////////////////////////////////
-    STORMKIT_FORCE_INLINE
-    inline auto FrameBuilder::add_raytracing_task(std::string                  name,
-                                                  FrameBuilder::SetupClosure   setup,
-                                                  FrameBuilder::ExecuteClosure execute,
-                                                  std::optional<Root>          root) noexcept -> TaskID {
-        return add_task(std::move(name), Task::Type::RAYTRACING, std::move(setup), std::move(execute), std::move(root));
-    }
-
-    /////////////////////////////////////
-    /////////////////////////////////////
-    STORMKIT_FORCE_INLINE
-    inline auto FrameBuilder::has_backbuffer() noexcept -> bool {
+    inline auto FrameBuilder::has_backbuffer() const noexcept -> bool {
         return m_backbuffer_id != std::nullopt;
     }
 
     /////////////////////////////////////
     /////////////////////////////////////
     STORMKIT_FORCE_INLINE
-    inline auto FrameBuilder::backbuffer() noexcept -> ResourceID {
+    inline auto FrameBuilder::backbuffer() const noexcept -> ResourceID {
         return *m_backbuffer_id;
     }
 
@@ -398,11 +421,37 @@ namespace stormkit::engine {
 
     /////////////////////////////////////
     /////////////////////////////////////
+    template<typename TaskData>
     STORMKIT_FORCE_INLINE
-    inline FrameResourcesAccessor::FrameResourcesAccessor(const Images&     images,
-                                                          const ImageViews& image_views,
-                                                          const Buffers&    buffers) noexcept
-        : m_images { images }, m_image_views { image_views }, m_buffers { buffers } {
+    inline auto FrameBuilder::add_task(std::string&&              name,
+                                       Task::Type                 type,
+                                       SetupClosure<TaskData>&&   setup,
+                                       ExecuteClosure<TaskData>&& execute,
+                                       std::optional<Root>        root) noexcept -> std::pair<TaskID, Ref<const TaskData>> {
+        auto& task = do_add_task(
+          std::move(name),
+          type,
+          [execute = std::move(execute)](auto& accessor, auto& cmb, auto bytes) noexcept {
+              execute(accessor, cmb, *std::bit_cast<const TaskData*>(stdr::data(bytes)));
+          },
+          std::move(root));
+
+        task.data.resize(sizeof(TaskData));
+        auto& task_data = *(new (stdr::data(task.data)) TaskData {});
+
+        auto builder = FrameTaskBuilder { task, m_next_resource_id, m_resources, m_tasks };
+        std::invoke(setup, builder, task_data);
+
+        return std::make_pair(task.id, as_ref(task_data));
+    }
+
+    /////////////////////////////////////
+    /////////////////////////////////////
+    STORMKIT_FORCE_INLINE
+    inline FrameResourcesAccessor::FrameResourcesAccessor(const Images&  images,
+                                                          ImageViews&&   image_views,
+                                                          const Buffers& buffers) noexcept
+        : m_images { images }, m_buffers { buffers }, m_image_views { std::move(image_views) } {
     }
 
     /////////////////////////////////////
@@ -422,33 +471,62 @@ namespace stormkit::engine {
 
     /////////////////////////////////////
     /////////////////////////////////////
-    STORMKIT_FORCE_INLINE
-    inline auto FrameResourcesAccessor::get_image(const FrameBuilder::ResourceID& id) const noexcept -> const gpu::Image& {
-        const auto it = stdr::find_if(m_images, [&id](const auto& pair) noexcept { return pair.first == id; });
-        ENSURES(it != stdr::cend(m_images));
+    template<typename Self>
+    inline auto FrameResourcesAccessor::get_image(this Self& self, const FrameBuilder::ResourceID& id) noexcept
+      -> meta::ForwardConst<Self, gpu::Image>& {
+        const auto it = stdr::find_if(self.m_images, [&id](const auto& pair) noexcept { return pair.first == id; });
+        ENSURES(it != stdr::cend(self.m_images));
 
-        return *it->second;
+        return std::forward_like<Self&>(*it->second);
     }
 
     /////////////////////////////////////
     /////////////////////////////////////
-    STORMKIT_FORCE_INLINE
-    inline auto FrameResourcesAccessor::get_image_view(const FrameBuilder::CombinedID& id) const noexcept
-      -> const gpu::ImageView& {
-        const auto it = stdr::find_if(m_image_views, [&id](const auto& pair) noexcept { return pair.first == id; });
-        ENSURES(it != stdr::cend(m_image_views));
+    template<typename Self>
+    inline auto FrameResourcesAccessor::get_image_view(this Self& self, const FrameBuilder::CombinedID& id) noexcept
+      -> meta::ForwardConst<Self, gpu::ImageView>& {
+        const auto it = stdr::find_if(self.m_image_views, [&id](const auto& pair) noexcept { return pair.first == id; });
+        ENSURES(it != stdr::cend(self.m_image_views));
 
-        return it->second;
+        return std::forward_like<Self&>(it->second);
     }
 
     /////////////////////////////////////
     /////////////////////////////////////
-    STORMKIT_FORCE_INLINE
-    inline auto FrameResourcesAccessor::get_buffer(const FrameBuilder::ResourceID& id) const noexcept -> const gpu::Buffer& {
-        const auto it = stdr::find_if(m_buffers, [&id](const auto& pair) noexcept { return pair.first == id; });
-        ENSURES(it != stdr::cend(m_buffers));
+    template<typename Self>
+    inline auto FrameResourcesAccessor::get_buffer(this Self& self, const FrameBuilder::ResourceID& id) noexcept
+      -> meta::ForwardConst<Self, gpu::Buffer>& {
+        const auto it = stdr::find_if(self.m_buffers, [&id](const auto& pair) noexcept { return pair.first == id; });
+        ENSURES(it != stdr::cend(self.m_buffers));
 
-        return *it->second;
+        return std::forward_like<Self&>(*it->second);
     }
+
+    // /////////////////////////////////////
+    // /////////////////////////////////////
+    // inline auto FrameResourcesAccessor::get_image(const FrameBuilder::ResourceID& id) noexcept -> gpu::Image& {
+    //     const auto it = stdr::find_if(m_images, [&id](const auto& pair) noexcept { return pair.first == id; });
+    //     ENSURES(it != stdr::cend(m_images));
+
+    //    return *it->second;
+    // }
+
+    // /////////////////////////////////////
+    // /////////////////////////////////////
+    // inline auto FrameResourcesAccessor::get_image_view(const FrameBuilder::CombinedID& id) noexcept -> gpu::ImageView& {
+    //     const auto it = stdr::find_if(m_image_views, [&id](const auto& pair) noexcept { return pair.first == id; });
+    //     ENSURES(it != stdr::cend(m_image_views));
+
+    //    return it->second;
+    // }
+
+    // /////////////////////////////////////
+    // /////////////////////////////////////
+    // inline auto FrameResourcesAccessor::get_buffer(const FrameBuilder::ResourceID& id) noexcept -> gpu::Buffer& {
+    //     const auto it = stdr::find_if(m_buffers, [&id](const auto& pair) noexcept { return pair.first == id; });
+    //     ENSURES(it != stdr::cend(m_buffers));
+
+    //    return *it->second;
+    // }
 
 } // namespace stormkit::engine

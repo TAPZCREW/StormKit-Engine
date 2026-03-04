@@ -37,8 +37,6 @@ namespace stormkit::engine {
     auto Application::run(stdfs::path boot_lua) -> void {
         expects(stdfs::is_regular_file(boot_lua));
 
-        auto frame_builder_mutex = std::mutex {};
-
         auto window_is_open = std::atomic_bool { true };
 
         m_window->on<wsi::EventType::CLOSED>([&window_is_open] noexcept {
@@ -47,13 +45,10 @@ namespace stormkit::engine {
         });
         m_window->on<wsi::EventType::KEY_DOWN>([this](auto, auto key, auto) noexcept {
             if (key == wsi::Key::ESCAPE) m_window->close();
-            else if (key == wsi::Key::F1)
-                m_renderer->dump_framegraph();
         });
 
         auto lua_started = false;
-        m_renderer->build_frame(frame_builder_mutex, m_build_frame);
-        m_renderer->start_rendering(frame_builder_mutex, window_is_open);
+        m_renderer->start_rendering(window_is_open);
         m_window->event_loop([&] mutable {
             if (not lua_started) {
                 auto _      = m_thread_pool.post_task<void>([this, &boot_lua] mutable noexcept {
@@ -81,7 +76,7 @@ namespace stormkit::engine {
 
             if (window_is_open) {
                 m_world->step(fsecond { 0 });
-                m_renderer->build_frame(frame_builder_mutex, m_build_frame);
+                m_renderer->build_frame(m_build_frame);
             }
         });
     }
