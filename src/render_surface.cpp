@@ -73,7 +73,7 @@ namespace stormkit::engine {
         const auto& render_finished = submission_resources.render_finished;
         auto&       in_flight       = submission_resources.in_flight;
 
-        TryAssert(in_flight.wait(), "Failed to wait for in flight {} fence", m_current_frame);
+        TryAssert(in_flight.wait(), std::format("Failed to wait for in flight {} fence", m_current_frame));
         TryDiscard(in_flight.reset());
 
         auto&& [_, image_index] = Try(m_swapchain->acquire_next_image(100ms, image_available));

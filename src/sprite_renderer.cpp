@@ -20,8 +20,6 @@ import :renderer;
 namespace sm = stormkit::monadic;
 
 namespace stormkit::engine {
-    using SpriteVertex = BidimPipeline::SpriteVertex;
-
     namespace {
         constexpr auto QUAD_SPRITE_SHADER = core::into_bytes({
         // clang-format off
@@ -53,29 +51,6 @@ namespace stormkit::engine {
 
         constexpr auto SPRITE_VERTEX_BUFFER_SIZE = SPRITE_VERTEX_SIZE * 4;
     } // namespace
-
-    struct SpriteRenderSystem {
-        auto pre_update() -> void {}
-
-        auto update() -> void {}
-
-        auto post_update() -> void {}
-
-      private:
-    };
-
-    // struct CreateInfo {
-    //     math::uextent3     extent;
-    //     PixelFormat        format     = PixelFormat::RGBA8_UNORM;
-    //     u32                layers     = 1u;
-    //     u32                mip_levels = 1u;
-    //     ImageType          type       = ImageType::T2D;
-    //     ImageCreateFlag    flags      = ImageCreateFlag::NONE;
-    //     SampleCountFlag    samples    = SampleCountFlag::C1;
-    //     ImageUsageFlag     usages     = ImageUsageFlag::SAMPLED | ImageUsageFlag::TRANSFER_DST | ImageUsageFlag::TRANSFER_SRC;
-    //     ImageTiling        tiling     = ImageTiling::OPTIMAL;
-    //     MemoryPropertyFlag property   = MemoryPropertyFlag::DEVICE_LOCAL;
-    // };
 
     auto make_sprite(entities::EntityManager& manager, TextureID texture_id, const math::fbounding_rect& sprite_rect) {
         auto e = manager.make_entity();
@@ -125,30 +100,10 @@ namespace stormkit::engine {
 
     //////////////////////////////////////
     //////////////////////////////////////
-    auto BidimPipeline::add_sprite(Sprite sprite) noexcept -> u32 {
-        const auto id = m_next_sprite_id++;
-
-        m_sprites.emplace_back(id, std::move(sprite));
-
-        m_dirty = true;
-
-        return id;
-    }
-
-    //////////////////////////////////////
-    //////////////////////////////////////
-    auto BidimPipeline::remove_sprite(u32 id) noexcept -> void {
-        auto it = stdr::find_if(m_sprites, [id](auto& pair) noexcept { return pair.first == id; });
-        if (it == stdr::cend(m_sprites)) return;
-        m_sprites.erase(it);
-
-        m_dirty = true;
-    }
-
-    //////////////////////////////////////
-    //////////////////////////////////////
-    auto BidimPipeline::do_init(const Renderer& renderer) noexcept -> gpu::Expected<void> {
-        const auto& device = renderer.device();
+    auto BidimPipeline::do_init(Application& application) noexcept -> gpu::Expected<void> {
+        const auto& renderer = application.renderer();
+        auto&       world    = application.world();
+        const auto& device   = renderer.device();
 
         m_render_data.vertex_shader = Try(gpu::Shader::load_from_bytes(device, QUAD_SPRITE_SHADER, gpu::ShaderStageFlag::VERTEX));
         m_render_data
@@ -190,6 +145,12 @@ namespace stormkit::engine {
                                                            m_render_data.pipeline_state,
                                                            m_render_data.pipeline_layout,
                                                            rendering_info));
+        world.add_system("StormKit:sprite_render_system",
+                         { bidim::StaticSpriteComponent::type() },
+                         {
+                           .update              = monadic::noop(),
+                           .on_message_received = bind_front(&BidimPipeline::on_message_received, this, std::ref(renderer)),
+                         });
         Return {};
     }
 
@@ -220,8 +181,8 @@ namespace stormkit::engine {
         const auto vertex_buffer_id = graph.retain_buffer(VERTEX_BUFFER_NAME, *m_render_data.vertex_buffer);
 
         if (should_upload) {
-            auto        staging_buffer_id = FrameBuilder::ResourceID {};
-            const auto& task              = graph.add_transfer_task(
+            auto staging_buffer_id = FrameBuilder::ResourceID {};
+            graph.add_transfer_task(
               UPDATE_VERTEX_TASK_NAME,
               [&](auto& builder) noexcept {
                   staging_buffer_id = builder.create_buffer(STAGING_BUFFER_NAME,
@@ -249,22 +210,61 @@ namespace stormkit::engine {
 
               backbuffer_id = builder.create_image(BACKBUFFER_NAME,
                                                    { .extent = m_viewport.to<u32>().to<3>(),
-                                                     .type   = gpu::ImageType::T2D,
                                                      .format = gpu::PixelFormat::RGBA8_UNORM,
+                                                     .layers = 1u,
+                                                     .type   = gpu::ImageType::T2D,
                                                      .usages = gpu::ImageUsageFlag::COLOR_ATTACHMENT
-                                                               | gpu::ImageUsageFlag::TRANSFER_SRC,
-                                                     .layers = 1u });
+                                                               | gpu::ImageUsageFlag::TRANSFER_SRC });
+
               builder.write_attachment(backbuffer_id, gpu::ClearColor {});
           },
-          [this](const auto& frame_resources, auto& cmb) noexcept {
+          [this](const auto&, auto& cmb) noexcept {
               auto buffers = as_refs(m_render_data.vertex_buffer);
 
               cmb.bind_pipeline(m_render_data.pipeline);
               cmb.bind_vertex_buffers(buffers, std::array { 0_u64 });
-              for (auto&& [_, sprite_data] : m_sprites) cmb.draw(4);
+              auto access = m_sprites.read(); // CONTINUER ICI
+              for (const auto& _ : *access) cmb.draw(4);
           },
           FrameBuilder::ROOT);
 
         graph.set_backbuffer(backbuffer_id);
+    }
+
+    //////////////////////////////////////
+    //////////////////////////////////////
+    auto BidimPipeline::on_message_received(const Renderer&                renderer,
+                                            const entities::EntityManager& entity_manager,
+                                            const entities::Message&       message,
+                                            const entities::Entities&) noexcept -> void {
+        auto sprites = m_sprites.write();
+        if (message.id == entities::EntityManager::ADDED_ENTITY_MESSAGE_ID) {
+            for (auto&& e : message.entities) {
+                if (not entity_manager.has_component(e, bidim::StaticSpriteComponent::type())) continue;
+
+                const auto& sprite_component = entity_manager.template get_component<
+                  bidim::StaticSpriteComponent>(e, bidim::StaticSpriteComponent::type());
+
+                sprites->emplace_back(e,
+                                      Sprite {
+                                        .texture = TryAssert(gpu::ImageView::create(renderer.device(),
+                                                                                    renderer.resources()
+                                                                                      .get_image(sprite_component.texture_id)),
+                                                             std::format("Failed to create image view for sprite {}", e)),
+                                      });
+            }
+        } else if (message.id == entities::EntityManager::REMOVED_ENTITY_MESSAGE_ID) {
+            auto remove_begin = stdr::cend(*sprites);
+            auto remove_end   = stdr::cend(*sprites);
+            for (auto&& e : message.entities) {
+                if (not entity_manager.has_component(e, bidim::StaticSpriteComponent::type())) continue;
+
+                auto result  = stdr::remove_if(*sprites, [&e](const auto& pair) noexcept { return pair.first == e; });
+                remove_begin = stdr::begin(result);
+                remove_end   = stdr::end(result);
+            }
+
+            if (remove_begin != stdr::cend(*sprites)) sprites->erase(remove_begin, remove_end);
+        }
     }
 } // namespace stormkit::engine

@@ -91,6 +91,8 @@ export namespace stormkit::engine {
 
         auto load_image(const stdfs::path& path) -> TextureID;
 
+        auto get_image(TextureID id) const noexcept -> const gpu::Image&;
+
       private:
         Ref<const gpu::Device>         m_device;
         HashMap<TextureID, gpu::Image> m_textures;
@@ -180,36 +182,55 @@ namespace stormkit::engine {
 
     /////////////////////////////////////
     /////////////////////////////////////
-    inline ResourceStore::ResourceStore(const gpu::Device& device) noexcept : m_device { as_ref(device) } {
+    STORMKIT_FORCE_INLINE
+    inline ResourceStore::ResourceStore(const gpu::Device& device) noexcept
+        : m_device { as_ref(device) } {
     }
 
     /////////////////////////////////////
     /////////////////////////////////////
+    STORMKIT_FORCE_INLINE
     inline ResourceStore::~ResourceStore() noexcept = default;
 
     /////////////////////////////////////
     /////////////////////////////////////
+    STORMKIT_FORCE_INLINE
     inline ResourceStore::ResourceStore(ResourceStore&&) noexcept = default;
 
     /////////////////////////////////////
     /////////////////////////////////////
+    STORMKIT_FORCE_INLINE
     inline auto ResourceStore::operator=(ResourceStore&&) noexcept -> ResourceStore& = default;
 
     /////////////////////////////////////
     /////////////////////////////////////
-    inline FrameResourceCache::FrameResourceCache(const gpu::Device& device) noexcept : m_device { as_ref(device) } {
+    STORMKIT_FORCE_INLINE
+    inline auto ResourceStore::get_image(TextureID id) const noexcept -> const gpu::Image& {
+        EXPECTS(m_textures.contains(id));
+
+        return m_textures.at(id);
     }
 
     /////////////////////////////////////
     /////////////////////////////////////
+    STORMKIT_FORCE_INLINE
+    inline FrameResourceCache::FrameResourceCache(const gpu::Device& device) noexcept
+        : m_device { as_ref(device) } {
+    }
+
+    /////////////////////////////////////
+    /////////////////////////////////////
+    STORMKIT_FORCE_INLINE
     inline FrameResourceCache::~FrameResourceCache() noexcept = default;
 
     /////////////////////////////////////
     /////////////////////////////////////
+    STORMKIT_FORCE_INLINE
     inline FrameResourceCache::FrameResourceCache(FrameResourceCache&&) noexcept = default;
 
     /////////////////////////////////////
     /////////////////////////////////////
+    STORMKIT_FORCE_INLINE
     inline auto FrameResourceCache::operator=(FrameResourceCache&&) noexcept -> FrameResourceCache& = default;
 
     /////////////////////////////////////
