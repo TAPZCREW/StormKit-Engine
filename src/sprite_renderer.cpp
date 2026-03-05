@@ -50,6 +50,15 @@ namespace stormkit::engine {
         };
 
         constexpr auto SPRITE_VERTEX_BUFFER_SIZE = SPRITE_VERTEX_SIZE * 4;
+        constexpr auto POOL_SIZES                = into_array<gpu::DescriptorPool::Size>({
+          .type             = gpu::DescriptorType::UNIFORM_BUFFER,
+          .descriptor_count = 1,
+        } // {
+          //  .type             = gpu::DescriptorType::COMBINED_IMAGE_SAMPLER,
+          //  .descriptor_count = 1,
+          //  }
+        );
+
     } // namespace
 
     auto make_sprite(entities::EntityManager& manager, TextureID texture_id, const math::fbounding_rect& sprite_rect) {
@@ -135,8 +144,21 @@ namespace stormkit::engine {
             },
         };
 
-        m_render_data.pipeline_layout = Try(gpu::PipelineLayout::create(device, {}));
-        const auto rendering_info     = gpu::RasterPipelineRenderingInfo {
+        m_render_data.descriptor_set_layout = Try(gpu::DescriptorSetLayout::create(
+          device,
+          into_dyn_array<
+            gpu::DescriptorSetLayoutBinding>(Camera::layout_binding()
+                                             // gpu::DescriptorSetLayoutBinding {
+                                             //                                  1, gpu::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                                             //                                  gpu::ShaderStageFlag::FRAGMENT,
+                                             //                                  1 }
+                                             )));
+
+        m_render_data
+          .pipeline_layout = Try(gpu::PipelineLayout::create(device,
+                                                             { .descriptor_set_layouts = to_refs(m_render_data
+                                                                                                   .descriptor_set_layout) }));
+        const auto rendering_info = gpu::RasterPipelineRenderingInfo {
             .color_attachment_formats = { gpu::PixelFormat::RGBA8_UNORM }
         };
 
@@ -144,6 +166,16 @@ namespace stormkit::engine {
                                                            m_render_data.pipeline_state,
                                                            m_render_data.pipeline_layout,
                                                            rendering_info));
+
+        m_render_data.descriptor_pool = Try(gpu::DescriptorPool::create(device, POOL_SIZES, 2));
+        m_render_data
+          .camera_descriptor_set = Try(m_render_data.descriptor_pool->create_descriptor_set(m_render_data.descriptor_set_layout));
+
+        m_camera.projection = math::orthographique(window_viewport.position.x,
+                                                   window_viewport.extent.width,
+                                                   window_viewport.position.y,
+                                                   window_viewport.extent.height);
+        std::println("{}", m_camera.projection);
         Return {};
     }
 
@@ -164,11 +196,13 @@ namespace stormkit::engine {
     //////////////////////////////////////
     //////////////////////////////////////
     auto BidimPipeline::update_framegraph(const Renderer& renderer, FrameBuilder& graph) noexcept -> void {
-        static constexpr auto UPDATE_VERTEX_TASK_NAME  = "StormKit:2d_pipeline:update_vertex_buffer";
-        static constexpr auto RENDER_SPRITES_TASK_NAME = "StormKit:2d_pipeline:render_sprites";
-        static constexpr auto BACKBUFFER_NAME          = "StormKit:2d_pipeline:backbuffer";
-        static constexpr auto VERTEX_BUFFER_NAME       = "StormKit:2d_pipeline:render_sprites:vertex_buffer";
-        static constexpr auto STAGING_BUFFER_NAME      = "StormKit:2d_pipeline:update_vertex_buffer:staging_buffer";
+        static constexpr auto UPDATE_VERTEX_TASK_NAME    = "StormKit:2d_pipeline:update_vertex_buffer";
+        static constexpr auto RENDER_SPRITES_TASK_NAME   = "StormKit:2d_pipeline:render_sprites";
+        static constexpr auto BACKBUFFER_NAME            = "StormKit:2d_pipeline:backbuffer";
+        static constexpr auto VERTEX_BUFFER_NAME         = "StormKit:2d_pipeline:render_sprites:vertex_buffer";
+        static constexpr auto VERTEX_STAGING_BUFFER_NAME = "StormKit:2d_pipeline:update_vertex_buffer:vertex_staging_buffer";
+        static constexpr auto CAMERA_BUFFER_NAME         = "StormKit:2d_pipeline:render_sprites:camera_buffer";
+        static constexpr auto CAMERA_STAGING_BUFFER_NAME = "StormKit:2d_pipeline:update_vertex_buffer:camera_staging_buffer";
 
         const auto& device        = renderer.device();
         auto        should_upload = false;
@@ -182,52 +216,86 @@ namespace stormkit::engine {
                                                                .property = gpu::MemoryPropertyFlag::DEVICE_LOCAL,
                                                              }),
                                          "Failed to allocate vertex gpu buffer");
-            std::println("SHOULD UPLOAD!");
+            m_render_data
+              .camera_buffer = TryAssert(gpu::Buffer::create(device,
+                                                             {
+                                                               .usages   = gpu::BufferUsageFlag::UNIFORM
+                                                                           | gpu::BufferUsageFlag::TRANSFER_DST,
+                                                               .size     = sizeof(Camera),
+                                                               .property = gpu::MemoryPropertyFlag::DEVICE_LOCAL,
+                                                             }),
+                                         "Failed to allocate camera gpu buffer");
+            const auto sets  = into_dyn_array<gpu::Descriptor>(gpu::BufferDescriptor {
+              .binding = 0,
+              .buffer  = as_ref(m_render_data.camera_buffer),
+              .range   = sizeof(Camera),
+              .offset  = 0,
+            });
+
+            m_render_data.camera_descriptor_set->update(sets);
             should_upload = true;
         }
 
         const auto vertex_buffer_id = graph.retain_buffer(VERTEX_BUFFER_NAME, *m_render_data.vertex_buffer);
+        const auto camera_buffer_id = graph.retain_buffer(CAMERA_BUFFER_NAME, *m_render_data.camera_buffer);
 
         if (should_upload) {
             struct UpdateVertexTaskData {
-                FrameBuilder::ResourceID staging_buffer_id = {};
-                FrameBuilder::ResourceID vertex_buffer_id  = {};
+                FrameBuilder::ResourceID vertex_staging_buffer_id = {};
+                FrameBuilder::ResourceID vertex_buffer_id         = {};
+
+                FrameBuilder::ResourceID camera_staging_buffer_id = {};
+                FrameBuilder::ResourceID camera_buffer_id         = {};
             };
 
             graph.add_transfer_task<UpdateVertexTaskData>(
               UPDATE_VERTEX_TASK_NAME,
               [&](auto& builder, auto& data) mutable noexcept {
-                  data.staging_buffer_id = builder.create_buffer(STAGING_BUFFER_NAME,
-                                                                 {
-                                                                   .usages = gpu::BufferUsageFlag::TRANSFER_SRC,
-                                                                   .size   = SPRITE_VERTEX_BUFFER_SIZE,
-                                                                 });
-                  data.vertex_buffer_id  = vertex_buffer_id;
+                  data.vertex_staging_buffer_id = builder.create_buffer(VERTEX_STAGING_BUFFER_NAME,
+                                                                        {
+                                                                          .usages = gpu::BufferUsageFlag::TRANSFER_SRC,
+                                                                          .size   = SPRITE_VERTEX_BUFFER_SIZE,
+                                                                        });
+                  data.vertex_buffer_id         = vertex_buffer_id;
+                  data.camera_staging_buffer_id = builder.create_buffer(CAMERA_STAGING_BUFFER_NAME,
+                                                                        {
+                                                                          .usages = gpu::BufferUsageFlag::TRANSFER_SRC,
+                                                                          .size   = sizeof(Camera),
+                                                                        });
+                  data.camera_buffer_id         = camera_buffer_id;
 
                   builder.write_buffer(data.vertex_buffer_id);
-                  builder.write_buffer(data.staging_buffer_id);
+                  builder.write_buffer(data.vertex_staging_buffer_id);
 
-                  std::println("UPLOAD SETUP");
+                  builder.write_buffer(data.camera_buffer_id);
+                  builder.write_buffer(data.camera_staging_buffer_id);
               },
-              [](auto& frame_resources, auto& cmb, const auto& data) static noexcept {
-                  std::println("UPLOAD EXECUTE");
-                  auto&       staging_buffer = frame_resources.get_buffer(data.staging_buffer_id);
-                  const auto& vertex_buffer  = frame_resources.get_buffer(data.vertex_buffer_id);
+              [this](auto& frame_resources, auto& cmb, const auto& data) noexcept {
+                  auto&       vertex_staging_buffer = frame_resources.get_buffer(data.vertex_staging_buffer_id);
+                  const auto& vertex_buffer         = frame_resources.get_buffer(data.vertex_buffer_id);
 
                   std::array<SpriteVertex, 4> vertices = {
-                      SpriteVertex { { 0.f, 0.f }, { 0.f, 0.f } },
-                      SpriteVertex { { 0.f, 1.f }, { 0.f, 1.f } },
-                      SpriteVertex { { 1.f, 0.f }, { 1.f, 0.f } },
-                      SpriteVertex { { 1.f, 1.f }, { 1.f, 1.f } },
+                      SpriteVertex { { 0.f, 0.f },     { 0.f, 0.f } },
+                      SpriteVertex { { 0.f, 100.f },   { 0.f, 1.f } },
+                      SpriteVertex { { 100.f, 0.f },   { 1.f, 0.f } },
+                      SpriteVertex { { 100.f, 100.f }, { 1.f, 1.f } },
                   };
-                  staging_buffer.upload(as_bytes(vertices));
+                  vertex_staging_buffer.upload(as_bytes(vertices));
 
-                  cmb.copy_buffer(staging_buffer, vertex_buffer, SPRITE_VERTEX_BUFFER_SIZE);
+                  cmb.copy_buffer(vertex_staging_buffer, vertex_buffer, SPRITE_VERTEX_BUFFER_SIZE);
+
+                  auto&       camera_staging_buffer = frame_resources.get_buffer(data.camera_staging_buffer_id);
+                  const auto& camera_buffer         = frame_resources.get_buffer(data.camera_buffer_id);
+
+                  camera_staging_buffer.upload(as_bytes(m_camera));
+
+                  cmb.copy_buffer(camera_staging_buffer, camera_buffer, sizeof(Camera));
               });
         }
 
         struct RenderSpriteTaskData {
             FrameBuilder::ResourceID vertex_buffer_id = {};
+            FrameBuilder::ResourceID camera_buffer_id = {};
             FrameBuilder::ResourceID backbuffer_id    = {};
         };
 
@@ -235,6 +303,7 @@ namespace stormkit::engine {
           RENDER_SPRITES_TASK_NAME,
           [&](auto& builder, auto& data) noexcept {
               data.vertex_buffer_id = vertex_buffer_id;
+              data.camera_buffer_id = camera_buffer_id;
               data.backbuffer_id    = builder.create_image(BACKBUFFER_NAME,
                                                            { .extent = m_viewport.to<u32>().to<3>(),
                                                              .format = gpu::PixelFormat::RGBA8_UNORM,
@@ -244,6 +313,7 @@ namespace stormkit::engine {
                                                                        | gpu::ImageUsageFlag::TRANSFER_SRC });
 
               builder.read_buffer(data.vertex_buffer_id);
+              builder.read_buffer(data.camera_buffer_id);
               builder.write_attachment(data.backbuffer_id, gpu::ClearColor {});
           },
           [this](const auto& frame_resources, auto& cmb, const auto& data) noexcept {
@@ -251,8 +321,12 @@ namespace stormkit::engine {
 
               auto buffers = as_refs(vertex_buffer);
 
-              cmb.bind_pipeline(m_render_data.pipeline);
-              cmb.bind_vertex_buffers(buffers, std::array { 0_u64 });
+              cmb.bind_pipeline(m_render_data.pipeline)
+                .bind_descriptor_sets(m_render_data.pipeline,
+                                      m_render_data.pipeline_layout,
+                                      as_refs(m_render_data.camera_descriptor_set),
+                                      {})
+                .bind_vertex_buffers(buffers, std::array { 0_u64 });
               auto access = m_sprites.read();
               for (const auto& _ : *access) cmb.draw(4);
           },

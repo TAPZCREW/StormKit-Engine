@@ -339,7 +339,6 @@ namespace stormkit::engine {
         auto frame_builder = FrameBuilder {};
         std::invoke(build_frame, frame_builder);
 
-        std::println("UPDATE BUILDER!");
         auto frame_builders = m_frame_builders.write();
         frame_builders->push(std::move(frame_builder));
     }

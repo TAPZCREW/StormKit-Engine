@@ -353,7 +353,6 @@ namespace stormkit::engine {
         auto& main_cmb = frame_resources.main_cmb;
         TryAssert(main_cmb.begin(true), "Failed to record main frame command buffer!");
         for (const auto& task_id : ordered_tasks) {
-            std::println("TASK {}", task_id.to_string());
             const auto& [_,
                          task] = *stdr::find_if(tasks, [&task_id](const auto& pair) noexcept { return pair.first == task_id; });
 
@@ -451,7 +450,6 @@ namespace stormkit::engine {
                     main_cmb.execute_sub_command_buffers(into_array(as_ref(pass.cmb)));
                 } break;
                 case FrameBuilder::Task::Type::TRANSFER: {
-                    std::println("TRANSFER TASK");
                     TryAssert(pass.cmb.begin(true), std::format("Failed to record transfer pass {} command buffer!", task.name));
                     task.execute(accessor, pass.cmb, task.data);
                     TryAssert(pass.cmb.end(), std::format("Failed to end pass {} command buffer!", task.name));
@@ -466,8 +464,6 @@ namespace stormkit::engine {
         }
 
         TryAssert(main_cmb.end(), "Failed to end main frame command buffer!");
-
-        // std::exit(-1);
 
         return frame_resources;
     }

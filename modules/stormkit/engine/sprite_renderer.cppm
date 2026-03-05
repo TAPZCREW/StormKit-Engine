@@ -50,6 +50,16 @@ export namespace stormkit::engine {
         auto update_framegraph(const Renderer& renderer, FrameBuilder& graph) noexcept -> void;
 
       private:
+        struct Sprite {
+            std::array<SpriteVertex, 4> vertices = {
+                SpriteVertex { { 0.f, 0.f }, { 0.f, 0.f } },
+                SpriteVertex { { 0.f, 1.f }, { 0.f, 1.f } },
+                SpriteVertex { { 1.f, 0.f }, { 1.f, 0.f } },
+                SpriteVertex { { 1.f, 1.f }, { 1.f, 1.f } },
+            };
+            gpu::ImageView texture;
+        };
+
         auto do_init(Application&) noexcept -> gpu::Expected<void>;
 
         auto on_message_received(const Renderer&,
@@ -66,23 +76,27 @@ export namespace stormkit::engine {
             DeferInit<gpu::PipelineLayout> pipeline_layout;
             gpu::RasterPipelineState       pipeline_state;
             DeferInit<gpu::Pipeline>       pipeline;
-        };
 
-        struct Sprite {
-            std::array<SpriteVertex, 4> vertices = {
-                SpriteVertex { { 0.f, 0.f }, { 0.f, 0.f } },
-                SpriteVertex { { 0.f, 1.f }, { 0.f, 1.f } },
-                SpriteVertex { { 1.f, 0.f }, { 1.f, 0.f } },
-                SpriteVertex { { 1.f, 1.f }, { 1.f, 1.f } },
-            };
-            gpu::ImageView texture;
-        };
+            DeferInit<gpu::DescriptorPool>      descriptor_pool;
+            DeferInit<gpu::DescriptorSetLayout> descriptor_set_layout;
+            DeferInit<gpu::DescriptorSet>       camera_descriptor_set;
 
-        // Heap<RenderData> m_render_data;
-        RenderData m_render_data;
+            DeferInit<gpu::Buffer> camera_buffer;
+        } m_render_data;
+
+        struct Camera {
+            math::fmat4 projection = math::fmat4::identity();
+            math::fmat4 view       = math::fmat4::identity();
+
+            static constexpr auto layout_binding() -> gpu::DescriptorSetLayoutBinding {
+                return { .binding          = 0,
+                         .type             = gpu::DescriptorType::UNIFORM_BUFFER,
+                         .stages           = gpu::ShaderStageFlag::VERTEX,
+                         .descriptor_count = 1 };
+            }
+        } m_camera;
 
         math::fextent2 m_viewport;
-        math::fmat4    m_projection_matrix;
 
         Locked<std::vector<std::pair<entities::Entity, Sprite>>> m_sprites;
     };

@@ -15,6 +15,3 @@ end
 local player = make_player()
 
 log.info("Player created with id {}", player)
--- while true do
---     log.info("Lua")
--- end
