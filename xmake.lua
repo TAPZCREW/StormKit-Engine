@@ -149,13 +149,13 @@ add_requires(stormkit_dep_name, {
 if is_mode("debug") or is_mode("reldbg") then add_cxflags("clang::-ggdb3") end
 
 namespace("stormkit", function()
-    includes("xmake/rules/*.xmake.lua")
+    includes("xmake/rules/slang.xmake.lua")
 
     target("engine", function()
         set_kind("$(kind)")
         set_languages("cxxlatest", "clatest")
 
-        add_rules("compile.shaders")
+        add_rules("wgsl.compile.shaders")
 
         set_basename("stormkit-engine")
 
@@ -166,12 +166,14 @@ namespace("stormkit", function()
 
         add_files("modules/stormkit/**.cppm", { public = true })
         add_files("src/**.cpp")
-        add_files("shaders/**.nzsl")
+        add_files("shaders/**.wgsl")
 
         add_defines("STORMKIT_ENGINE_BUILD", { public = false })
 
         add_embeddirs("$(builddir)/shaders")
         add_cxflags("--embed-dir=$(builddir)/shaders")
+
+        add_packages("slang")
     end)
 
     includes("game/xmake.lua")
