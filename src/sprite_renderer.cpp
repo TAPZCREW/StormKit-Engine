@@ -173,12 +173,17 @@ namespace stormkit::engine {
         m_render_data
           .camera_descriptor_set = Try(m_render_data.descriptor_pool->create_descriptor_set(m_render_data.descriptor_set_layout));
 
-        const auto ortho = [](auto& out, f32 left, f32 right, f32 top, f32 bottom) {
+        m_camera.projection = math::orthographique(window_viewport.position.x,
+                                                   window_viewport.extent.width,
+                                                   window_viewport.position.y,
+                                                   window_viewport.extent.height);
+=======
+        const auto ortho    = [](auto& out, f32 left, f32 right, f32 bottom, f32 top) {
             out = math::fmat4::identity();
 
             out[0, 0] = f32 { 2 } / (right - left);
             out[1, 1] = f32 { 2 } / (top - bottom);
-            out[2, 2] = -f32 { 2 };
+            out[2, 2] = -f32 { 1 };
 
             out[0, 3] = -(right + left) / (right - left);
             out[1, 3] = -(top + bottom) / (top - bottom);
