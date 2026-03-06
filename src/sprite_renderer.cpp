@@ -131,6 +131,7 @@ namespace stormkit::engine {
                 .input_assembly_state = { gpu::PrimitiveTopology::TRIANGLE_STRIP },
                 .viewport_state       = { .viewports = { window_viewport },
                                          .scissors  = { scissor }, },
+                .rasterization_state = { .cull_mode = gpu::CullModeFlag::NONE, },
                 .color_blend_state = { .attachments = { { .blend_enable           = true,
                                        .src_color_blend_factor = gpu::BlendFactor::SRC_ALPHA,
                                        .dst_color_blend_factor = gpu::BlendFactor::ONE_MINUS_SRC_ALPHA,
@@ -142,14 +143,15 @@ namespace stormkit::engine {
                 .binding_descriptions = SPRITE_VERTEX_BINDING_DESCRIPTIONS | stdr::to<std::vector>(),
                 .input_attribute_descriptions= SPRITE_VERTEX_ATTRIBUTE_DESCRIPTIONS | stdr::to<std::vector>(),
             },
-        };
+}; // namespace stormkit::engine
 
         m_render_data.descriptor_set_layout = Try(gpu::DescriptorSetLayout::create(
           device,
           into_dyn_array<
             gpu::DescriptorSetLayoutBinding>(Camera::layout_binding()
                                              // gpu::DescriptorSetLayoutBinding {
-                                             //                                  1, gpu::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                                             //                                  1,
+                                             //                                  gpu::DescriptorType::COMBINED_IMAGE_SAMPLER,
                                              //                                  gpu::ShaderStageFlag::FRAGMENT,
                                              //                                  1 }
                                              )));
@@ -171,10 +173,27 @@ namespace stormkit::engine {
         m_render_data
           .camera_descriptor_set = Try(m_render_data.descriptor_pool->create_descriptor_set(m_render_data.descriptor_set_layout));
 
-        m_camera.projection = math::orthographique(window_viewport.position.x,
-                                                   window_viewport.extent.width,
-                                                   window_viewport.position.y,
-                                                   window_viewport.extent.height);
+        const auto ortho = [](auto& out, f32 left, f32 right, f32 bottom, f32 top) {
+            out = math::fmat4::identity();
+
+            out[0, 0] = f32 { 2 } / (right - left);
+            out[1, 1] = f32 { 2 } / (top - bottom);
+            out[2, 2] = -f32 { 1 };
+
+            out[0, 3] = -(right + left) / (right - left);
+            out[1, 3] = -(top + bottom) / (top - bottom);
+            out[2, 3] = -f32 { 1 };
+        };
+
+        ortho(m_camera.projection,
+              window_viewport.position.x,
+              window_viewport.extent.width,
+              window_viewport.position.y,
+              window_viewport.extent.height);
+        // m_camera.projection = math::orthographique(window_viewport.position.x,
+        //                                            window_viewport.extent.width,
+        //                                            window_viewport.position.y,
+        //                                            window_viewport.extent.height);
         std::println("{}", m_camera.projection);
         Return {};
     }
@@ -276,8 +295,8 @@ namespace stormkit::engine {
 
                   std::array<SpriteVertex, 4> vertices = {
                       SpriteVertex { { 0.f, 0.f },     { 0.f, 0.f } },
-                      SpriteVertex { { 0.f, 100.f },   { 0.f, 1.f } },
                       SpriteVertex { { 100.f, 0.f },   { 1.f, 0.f } },
+                      SpriteVertex { { 0.f, 100.f },   { 0.f, 1.f } },
                       SpriteVertex { { 100.f, 100.f }, { 1.f, 1.f } },
                   };
                   vertex_staging_buffer.upload(as_bytes(vertices));
@@ -287,7 +306,10 @@ namespace stormkit::engine {
                   auto&       camera_staging_buffer = frame_resources.get_buffer(data.camera_staging_buffer_id);
                   const auto& camera_buffer         = frame_resources.get_buffer(data.camera_buffer_id);
 
-                  camera_staging_buffer.upload(as_bytes(m_camera));
+                  auto camera       = auto(m_camera);
+                  camera.projection = math::transpose(camera.projection);
+                  camera.view       = math::transpose(camera.view);
+                  camera_staging_buffer.upload(as_bytes(camera));
 
                   cmb.copy_buffer(camera_staging_buffer, camera_buffer, sizeof(Camera));
               });

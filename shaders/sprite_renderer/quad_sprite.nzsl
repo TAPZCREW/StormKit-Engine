@@ -12,7 +12,7 @@ struct VertOut {
     [location(0)] uv: vec2[f32]
 }
 
-[layout(std140)]
+[layout(std140), spirv(RowMajor)]
 struct Camera {
     proj: mat4[f32],
     view: mat4[f32],

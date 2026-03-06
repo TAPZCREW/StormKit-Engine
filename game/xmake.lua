@@ -2,7 +2,7 @@ target("game", function()
     set_kind("binary")
     set_languages("cxxlatest", "clatest")
 
-    add_rules("compile.shaders")
+    add_rules("wgsl.compile.shaders")
 
     add_rules(stormkit_rule_prefix .. "stormkit::application")
     set_values("stormkit.components", { "stormkit", "log", "entities", "image", "wsi", "gpu", "lua" })
@@ -17,6 +17,8 @@ target("game", function()
     add_packages("libjpeg-turbo")
 
     add_deps("stormkit::engine")
+
+    add_packages("slang")
 
     on_load(function(target)
         if get_config("devmode") then
