@@ -70,6 +70,8 @@ export namespace stormkit::engine {
 
             std::vector<std::byte> data = {};
 
+            std::vector<std::pair<ResourceID, gpu::ClearValue>> clear_values;
+
             bool root = false;
         };
 
@@ -318,6 +320,8 @@ namespace stormkit::engine {
         m_task.writes |= image_id;
         node.wrote_by |= m_task.id;
         node.attached_in |= m_task.id;
+
+        m_task.clear_values.emplace_back(image_id, std::move(*clear_value));
     }
 
     /////////////////////////////////////

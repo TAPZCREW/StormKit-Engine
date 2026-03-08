@@ -13,13 +13,20 @@ struct Camera {
     view: mat4x4f,
 }
 
-@binding(0) @group(0)
+struct SpriteData {
+    model: mat4x4f,
+}
+
+@group(0) @binding(0)
 var<uniform> camera: Camera;
+
+@group(1) @binding(0)
+var<uniform> sprite_data: SpriteData;
 
 @vertex fn vert_main(input: VertIn) -> VertOut {
     var output: VertOut;
 
-    output.position = camera.proj * camera.view * vec4f(input.position, 0., 1.);
+    output.position = camera.proj * camera.view * vec4f(input.position, 1., 1.);
     output.uv    = input.uv;
 
     return output;

@@ -51,23 +51,27 @@ export namespace stormkit::engine {
 
       private:
         struct Sprite {
-            std::array<SpriteVertex, 4> vertices = {
-                SpriteVertex { { 0.f, 0.f }, { 0.f, 0.f } },
-                SpriteVertex { { 0.f, 1.f }, { 0.f, 1.f } },
-                SpriteVertex { { 1.f, 0.f }, { 1.f, 0.f } },
-                SpriteVertex { { 1.f, 1.f }, { 1.f, 1.f } },
-            };
             gpu::ImageView texture;
+            gpu::Sampler   sampler;
         };
 
         auto do_init(Application&) noexcept -> gpu::Expected<void>;
+        auto do_init_scene_data(Application&) noexcept -> gpu::Expected<void>;
+        auto do_init_buffered_scene_data(Application&) noexcept -> gpu::Expected<void>;
+
+        auto insert_update_camera_task(const Renderer&, FrameBuilder&, FrameBuilder::ResourceID) noexcept -> void;
+        auto insert_update_sprites_task(const Renderer&, FrameBuilder&) noexcept -> void;
+        auto insert_render_sprites_task(const Renderer&,
+                                        FrameBuilder&,
+                                        FrameBuilder::ResourceID,
+                                        FrameBuilder::ResourceID) noexcept -> void;
 
         auto on_message_received(const Renderer&,
                                  const entities::EntityManager&,
                                  const entities::Message&,
                                  const entities::Entities&) noexcept -> void;
 
-        struct RenderData {
+        struct SceneData {
             DeferInit<gpu::Shader> vertex_shader;
             DeferInit<gpu::Shader> fragment_shader;
 
@@ -77,12 +81,20 @@ export namespace stormkit::engine {
             gpu::RasterPipelineState       pipeline_state;
             DeferInit<gpu::Pipeline>       pipeline;
 
-            DeferInit<gpu::DescriptorPool>      descriptor_pool;
-            DeferInit<gpu::DescriptorSetLayout> descriptor_set_layout;
-            DeferInit<gpu::DescriptorSet>       camera_descriptor_set;
+            DeferInit<gpu::DescriptorPool> descriptor_pool;
+        } m_scene_data;
 
-            DeferInit<gpu::Buffer> camera_buffer;
-        } m_render_data;
+        struct BufferedSceneData {
+            DeferInit<gpu::DescriptorSetLayout> camera_descriptor_layout;
+            DeferInit<gpu::DescriptorSet>       camera_descriptor_set;
+            DeferInit<gpu::Buffer>              camera_buffer;
+            u32                                 camera_current_offset = 0;
+
+            DeferInit<gpu::DescriptorSetLayout> sprite_descriptor_layout;
+            DeferInit<gpu::DescriptorSet>       sprite_descriptor_set;
+            DeferInit<gpu::Buffer>              sprite_buffer;
+            u32                                 sprite_current_offset = 0;
+        } m_buffered_scene_data;
 
         struct Camera {
             math::fmat4 projection = math::fmat4::identity();
@@ -90,7 +102,7 @@ export namespace stormkit::engine {
 
             static constexpr auto layout_binding() -> gpu::DescriptorSetLayoutBinding {
                 return { .binding          = 0,
-                         .type             = gpu::DescriptorType::UNIFORM_BUFFER,
+                         .type             = gpu::DescriptorType::UNIFORM_BUFFER_DYNAMIC,
                          .stages           = gpu::ShaderStageFlag::VERTEX,
                          .descriptor_count = 1 };
             }
@@ -99,6 +111,26 @@ export namespace stormkit::engine {
         math::fextent2 m_viewport;
 
         Locked<std::vector<std::pair<entities::Entity, Sprite>>> m_sprites;
+
+        struct Dirty {
+            inline Dirty() noexcept  = default;
+            inline ~Dirty() noexcept = default;
+
+            inline Dirty(Dirty&& other) noexcept : camera { other.camera.load() }, sprites { other.sprites.load() } {}
+
+            inline auto operator=(Dirty&& other) noexcept -> Dirty& {
+                if (this == &other) [[unlikely]]
+                    return *this;
+
+                camera.store(other.camera.load());
+                sprites.store(other.sprites.load());
+
+                return *this;
+            }
+
+            std::atomic_bool camera  = true;
+            std::atomic_bool sprites = true;
+        } m_dirty;
     };
 } // namespace stormkit::engine
 

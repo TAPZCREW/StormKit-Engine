@@ -134,6 +134,9 @@ export namespace stormkit::engine {
 
         auto build_frame(BuildFrameClosure build_frame) noexcept -> void;
 
+        auto current_frame() const noexcept -> u32;
+        auto buffering_count() const noexcept -> u32;
+
       private:
         auto do_init(std::string_view, OptionalRef<const wsi::Window>) noexcept -> gpu::Expected<void>;
         auto do_init_instance(std::string_view) noexcept -> gpu::Expected<void>;
@@ -341,5 +344,19 @@ namespace stormkit::engine {
 
         auto frame_builders = m_frame_builders.write();
         frame_builders->push(std::move(frame_builder));
+    }
+
+    /////////////////////////////////////
+    /////////////////////////////////////
+    STORMKIT_FORCE_INLINE
+    inline auto Renderer::current_frame() const noexcept -> u32 {
+        return m_current_frame;
+    }
+
+    /////////////////////////////////////
+    /////////////////////////////////////
+    STORMKIT_FORCE_INLINE
+    inline auto Renderer::buffering_count() const noexcept -> u32 {
+        return m_surface->buffering_count();
     }
 } // namespace stormkit::engine

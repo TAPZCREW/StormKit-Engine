@@ -407,25 +407,32 @@ namespace stormkit::engine {
 
                         const auto format = image->format();
 
+                        const auto& clear_value = stdr::find_if(task.clear_values, [image_id](const auto& pair) {
+                                                      return pair.first == image_id;
+                                                  })->second;
+
                         if (gpu::is_stencil_only_format(format)) {
                             rendering_info.stencil_attachment = gpu::RenderingInfo::Attachment {
-                                .image_view = as_ref(view),
-                                .load_op    = load_op,
-                                .store_op   = store_op,
+                                .image_view  = as_ref(view),
+                                .load_op     = load_op,
+                                .store_op    = store_op,
+                                .clear_value = clear_value,
                             };
                             inheritance_info.stencil_attachment = format;
                         } else if (gpu::is_depth_format(format)) {
                             rendering_info.depth_attachment = gpu::RenderingInfo::Attachment {
-                                .image_view = as_ref(view),
-                                .load_op    = load_op,
-                                .store_op   = store_op,
+                                .image_view  = as_ref(view),
+                                .load_op     = load_op,
+                                .store_op    = store_op,
+                                .clear_value = clear_value,
                             };
                             inheritance_info.depth_attachment = format;
                         } else {
                             rendering_info.color_attachments.emplace_back(gpu::RenderingInfo::Attachment {
-                              .image_view = as_ref(view),
-                              .load_op    = load_op,
-                              .store_op   = store_op,
+                              .image_view  = as_ref(view),
+                              .load_op     = load_op,
+                              .store_op    = store_op,
+                              .clear_value = clear_value,
                             });
                             inheritance_info.color_attachments.emplace_back(format);
                         }
