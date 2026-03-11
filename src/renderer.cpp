@@ -19,7 +19,7 @@ namespace stdr = std::ranges;
 namespace cm   = stormkit::monadic;
 
 namespace stormkit::engine {
-    LOGGER("renderer")
+    LOGGER_FUNC(RENDERER_LOGGER)
 
     namespace {
         [[maybe_unused]]
@@ -89,27 +89,32 @@ namespace stormkit::engine {
       -> gpu::Expected<void> {
         m_extent = window->extent();
 
-        ilog("Initializing Renderer...");
+        ilog("Initializing ...");
         Try(gpu::initialize_backend());
-        ilog("Vulkan backend successfully initialized. ✓");
+        dlog("Vulkan backend successfully initialized. ✓");
         Try(do_init_instance(application_name));
-        ilog("GPU instance successfully initialized. ✓");
+        dlog("GPU instance successfully initialized. ✓");
         Try(do_init_device());
-        ilog("GPU device successfully initialized. ✓");
+        dlog("GPU device successfully initialized. ✓");
 
         m_raster_queue = gpu::Queue::create(*m_device, m_device->raster_queue_entry());
         m_device->set_object_name(*m_raster_queue, "StormKit:raster_queue");
         m_main_command_pool = Try(gpu::CommandPool::create(*m_device));
-        ilog("GPU main command pool successfully initialized. ✓");
+        dlog("GPU main command pool successfully initialized. ✓");
 
         Try(do_init_render_surface(std::move(window)));
-        ilog("GPU windowed render surface successfully initialized. ✓");
+        dlog("GPU windowed render surface successfully initialized. ✓");
 
-        m_resource_store       = ResourceStore { *m_device };
+        m_resource_store       = ResourceStore { *this };
         m_frame_resource_cache = FrameResourceCache { *m_device };
         m_frame_resources.resize(m_surface->buffering_count());
 
-        ilog("Renderer initialized!");
+        m_command_buffers = Try(m_main_command_pool->create_command_buffers(m_surface->buffering_count()));
+        auto i            = 0;
+        for (auto& cmb : m_command_buffers) m_device->set_object_name(cmb, std::format("StormKit:blit_cmb_{}", i++));
+
+        ilog("Initialized!");
+
         Return {};
     }
 
@@ -127,7 +132,7 @@ namespace stormkit::engine {
         const auto& physical_devices = m_instance->physical_devices();
         const auto& physical_device  = pick_physical_device(physical_devices);
 
-        ilog("Using physical device {}", *physical_device);
+        ilog("Using physical device {}.", *physical_device);
 
         m_device = Try(gpu::Device::allocate(physical_device, m_instance));
 
@@ -140,7 +145,7 @@ namespace stormkit::engine {
     /////////////////////////////////////
     /////////////////////////////////////
     auto Renderer::do_init_render_surface(OptionalRef<const wsi::Window> window) noexcept -> gpu::Expected<void> {
-        if (not window) ensures(not window, "Offscreen rendering not yet implemented");
+        if (not window) ensures(not window, "Offscreen rendering not yet implemented!");
 
         m_surface = Try(RenderSurface::create(*this, *window));
 
@@ -149,24 +154,10 @@ namespace stormkit::engine {
 
     /////////////////////////////////////
     /////////////////////////////////////
-    auto Renderer::thread_loop(std::atomic_bool& window_is_open, std::stop_token token) noexcept -> void {
-        set_current_thread_name("StormKit:RenderThread");
-
-        m_command_buffers = TryAssert(m_main_command_pool->create_command_buffers(m_surface->buffering_count()),
-                                      "Failed to create main command buffers");
-        auto i            = 0;
-        for (auto& cmb : m_command_buffers) m_device->set_object_name(cmb, std::format("StormKit:blit_cmb_{}", i++));
-
-        for (;;) {
-            if (token.stop_requested()) break;
-            if (window_is_open) {
-                auto frame = TryAssert(m_surface->begin_frame(*m_device), "Failed to start frame!");
-                TryAssert(do_render(frame), "Failed to render frame!");
-                TryAssert(m_surface->present_frame(m_raster_queue, frame), "Failed to present frame!");
-            }
-        }
-
-        m_device->wait_idle();
+    auto Renderer::do_render() noexcept -> void {
+        auto frame = TryAssert(m_surface->begin_frame(*m_device), "Failed to start frame!");
+        TryAssert(do_render(frame), "Failed to render frame!");
+        TryAssert(m_surface->present_frame(m_raster_queue, frame), "Failed to present frame!");
     }
 
     /////////////////////////////////////
@@ -279,7 +270,7 @@ namespace stormkit::engine {
         auto result = dag.topological_sort();
         if (not result) {
             TryAssert(io::write_text("./dag.dot", frame_builder.dump()), "Failed to write dag.dot!");
-            ensures(false, std::format("Cycles detected in frame graph {}", result.error()));
+            ensures(false, std::format("Cycles detected in frame graph {}!", result.error()));
         }
 
         auto ordered_tasks = TryAssert(dag.topological_sort(), "Cycles detected in frame graph!")
@@ -306,7 +297,7 @@ namespace stormkit::engine {
                                          frame_resources.image_views
                                            .emplace_back(_task_id | _resource_id,
                                                          TryAssert(gpu::ImageView::create(*m_device, image),
-                                                                   std::format("Failed to allocate image view for image {}",
+                                                                   std::format("Failed to allocate image view for image {}!",
                                                                                resource.name)));
                                      }
                                  }
@@ -327,7 +318,7 @@ namespace stormkit::engine {
                                          frame_resources.image_views
                                            .emplace_back(_task_id | _resource_id,
                                                          TryAssert(gpu::ImageView::create(*m_device, image),
-                                                                   std::format("Failed to allocate image view for image {}",
+                                                                   std::format("Failed to allocate image view for image {}!",
                                                                                resource.name)));
                                      }
                                  }

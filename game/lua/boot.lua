@@ -14,4 +14,9 @@ end
 
 local player = make_player()
 
-log.info("Player created with id {}", player)
+local test = world:make_entity()
+world:add_component(test, stormkit.transform_component.new())
+
+local transform = world:get_component(player, "TransformComponent")
+
+log.info("Player created with id {} {}", player, transform.position)

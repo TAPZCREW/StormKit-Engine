@@ -7,4 +7,4 @@ export module stormkit.engine;
 export import :core;
 export import :renderer;
 export import :ecs;
-export import :sprite_renderer;
+export import :pipeline_2d;

@@ -25,13 +25,5 @@ export namespace stormkit::engine {
         constexpr auto type() const noexcept -> entities::ComponentType { return hash(component_name()); }
     };
 
-    struct TransformComponent {
-        math::fmat4 model;
-
-        constexpr auto component_name() const noexcept -> std::string_view { return "TransformComponent"; }
-
-        constexpr auto type() const noexcept -> entities::ComponentType { return hash(component_name()); }
-    };
-
     STORMKIT_ENGINE_API auto bind_common_components(sol::table& engine) noexcept -> void;
 } // namespace stormkit::engine

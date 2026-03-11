@@ -78,9 +78,11 @@ export namespace stormkit::engine {
         std::vector<std::pair<hash32, gpu::Buffer>> m_buffers;
     };
 
+    class Renderer;
+
     class ResourceStore {
       public:
-        explicit ResourceStore(const gpu::Device& device) noexcept;
+        explicit ResourceStore(const Renderer& renderer) noexcept;
         ~ResourceStore() noexcept;
 
         ResourceStore(const ResourceStore&)                    = delete;
@@ -94,7 +96,7 @@ export namespace stormkit::engine {
         auto get_image(TextureID id) const noexcept -> const gpu::Image&;
 
       private:
-        Ref<const gpu::Device>         m_device;
+        Ref<const Renderer>            m_renderer;
         HashMap<TextureID, gpu::Image> m_textures;
     };
 
@@ -122,8 +124,6 @@ export namespace stormkit::engine {
                              ThreadPool&                    thread_pool,
                              OptionalRef<const wsi::Window> window) noexcept -> gpu::Expected<Heap<Renderer>>;
 
-        auto start_rendering(std::atomic_bool& window_is_open) noexcept -> void;
-
         auto instance() const noexcept -> const gpu::Instance&;
         auto device() const noexcept -> const gpu::Device&;
         auto surface() const noexcept -> const RenderSurface&;
@@ -137,39 +137,40 @@ export namespace stormkit::engine {
         auto current_frame() const noexcept -> u32;
         auto buffering_count() const noexcept -> u32;
 
+        auto do_render() noexcept -> void;
+
       private:
         auto do_init(std::string_view, OptionalRef<const wsi::Window>) noexcept -> gpu::Expected<void>;
         auto do_init_instance(std::string_view) noexcept -> gpu::Expected<void>;
         auto do_init_device() noexcept -> gpu::Expected<void>;
         auto do_init_render_surface(OptionalRef<const wsi::Window>) noexcept -> gpu::Expected<void>;
 
-        auto thread_loop(std::atomic_bool&, std::stop_token) noexcept -> void;
         auto do_render(RenderSurface::Frame&) noexcept -> gpu::Expected<void>;
 
         auto realize_frame(const FrameBuilder& frame_builder) noexcept -> FrameResources;
 
-        bool                          m_validation_layers_enabled = false;
-        u32                           m_current_frame             = 0;
-        math::uextent2                m_extent;
-        DeferInit<gpu::Instance>      m_instance;
-        Heap<gpu::Device>             m_device;
-        DeferInit<RenderSurface>      m_surface;
-        DeferInit<gpu::Queue>         m_raster_queue;
-        DeferInit<gpu::CommandPool>   m_main_command_pool;
+        bool            m_validation_layers_enabled = false;
+        u32             m_current_frame             = 0;
+        math::uextent2  m_extent;
+        Ref<ThreadPool> m_thread_pool;
+
+        DeferInit<gpu::Instance> m_instance;
+        Heap<gpu::Device>        m_device;
+
+        DeferInit<RenderSurface> m_surface;
+
+        DeferInit<gpu::Queue>           m_raster_queue;
+        DeferInit<gpu::CommandPool>     m_main_command_pool;
+        std::vector<gpu::CommandBuffer> m_command_buffers;
+
         DeferInit<ResourceStore>      m_resource_store;
         DeferInit<FrameResourceCache> m_frame_resource_cache;
 
-        Ref<ThreadPool> m_thread_pool;
-
-        std::vector<gpu::CommandBuffer> m_command_buffers;
-
-        std::jthread m_render_thread;
-
-        Locked<std::queue<FrameBuilder>> m_frame_builders;
-
+        Locked<std::queue<FrameBuilder>>       m_frame_builders;
         std::vector<DeferInit<FrameResources>> m_frame_resources;
     };
 
+    inline constexpr auto RENDERER_LOGGER = log::Module { "Renderer" };
 } // namespace stormkit::engine
 
 ////////////////////////////////////////////////////////////////////
@@ -182,8 +183,8 @@ namespace stormkit::engine {
     /////////////////////////////////////
     /////////////////////////////////////
     STORMKIT_FORCE_INLINE
-    inline ResourceStore::ResourceStore(const gpu::Device& device) noexcept
-        : m_device { as_ref(device) } {
+    inline ResourceStore::ResourceStore(const Renderer& renderer) noexcept
+        : m_renderer { as_ref(renderer) } {
     }
 
     /////////////////////////////////////
@@ -243,7 +244,7 @@ namespace stormkit::engine {
     /////////////////////////////////////
     STORMKIT_FORCE_INLINE
     inline Renderer::~Renderer() noexcept {
-        m_device->wait_idle();
+        if (m_device) TryAssert(m_device->wait_idle(), "Failed to wait for device idle");
     }
 
     /////////////////////////////////////
@@ -276,14 +277,6 @@ namespace stormkit::engine {
         auto renderer = core::allocate_unsafe<Renderer>(thread_pool, PrivateFuncTag {});
         Try(renderer->do_init(application_name, std::move(window)));
         Return renderer;
-    }
-
-    /////////////////////////////////////
-    /////////////////////////////////////
-    STORMKIT_FORCE_INLINE
-    inline auto Renderer::start_rendering(std::atomic_bool& window_is_open) noexcept -> void {
-        m_render_thread = std::jthread { bind_front(&Renderer::thread_loop, this, std::ref(window_is_open)) };
-        set_thread_name(m_render_thread, "StormKit:RenderThread");
     }
 
     /////////////////////////////////////

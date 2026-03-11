@@ -14,6 +14,8 @@ import std;
 
 import stormkit;
 
+import :application.world;
+
 namespace stormkit::engine {
     auto bind_common_components(sol::table& engine) noexcept -> void {
         engine.new_usertype<DebugNameComponent>("debug_name_component",
@@ -22,11 +24,6 @@ namespace stormkit::engine {
                                                 &DebugNameComponent::name,
                                                 "type",
                                                 &DebugNameComponent::component_name);
-        engine.new_usertype<TransformComponent>("transform_component",
-                                                sol::constructors<TransformComponent(const math::fmat4&)> {},
-                                                "model",
-                                                &TransformComponent::model,
-                                                "type",
-                                                &TransformComponent::component_name);
+        // auto& world = sol::object { engine["world"] }.as<World>();
     }
 } // namespace stormkit::engine

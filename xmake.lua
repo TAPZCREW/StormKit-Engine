@@ -165,7 +165,7 @@ namespace("stormkit", function()
         add_includedirs("include")
 
         add_files("modules/stormkit/**.cppm", { public = true })
-        add_files("src/**.cpp")
+        add_files("src/**.cpp", "src/**.cppm")
         add_files("shaders/**.wgsl")
 
         add_defines("STORMKIT_ENGINE_BUILD", { public = false })
